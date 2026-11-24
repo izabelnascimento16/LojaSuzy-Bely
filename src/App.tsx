@@ -8,6 +8,7 @@ import type {
   Category,
   InstitutionalTab,
   Product,
+  PublicStoreSettings,
   ShippingOption,
   Testimonial,
   User,
@@ -25,6 +26,7 @@ import {CheckoutView} from './components/CheckoutView';
 import {CustomerAreaView} from './components/CustomerAreaView';
 import {AdminPanelView} from './components/AdminPanelView';
 import {InstitutionalView} from './components/InstitutionalView';
+import {OfflineIndicator, PWAInstallPrompt} from './components/PWAInstallPrompt';
 
 const CART_STORAGE_KEY = 'suzy_bely_cart_v1';
 const CART_SESSION_KEY = 'suzy_bely_session_v1';
@@ -50,6 +52,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [banners, setBanners] = useState<Banner[]>([]);
   const [testimonials, setTestimonials] = useState<Testimonial[]>([]);
+  const [storeSettings, setStoreSettings] = useState<PublicStoreSettings | null>(null);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
   // Filters & Selection
@@ -90,11 +93,13 @@ export default function App() {
         products: Product[];
         banners: Banner[];
         testimonials: Testimonial[];
+        storeSettings?: PublicStoreSettings;
       }>('/api/catalog');
       setCategories(res.categories);
       setProducts(res.products);
       setBanners(res.banners);
       setTestimonials(res.testimonials);
+      if (res.storeSettings) setStoreSettings(res.storeSettings);
 
       // Keep cart items synchronized with live prices and stock
       setCartItems((prev) =>
@@ -136,9 +141,11 @@ export default function App() {
     };
     source.addEventListener('catalog_updated', handleUpdate);
     source.addEventListener('banner_updated', handleUpdate);
+    source.addEventListener('settings_updated', handleUpdate);
     return () => {
       source.removeEventListener('catalog_updated', handleUpdate);
       source.removeEventListener('banner_updated', handleUpdate);
+      source.removeEventListener('settings_updated', handleUpdate);
       source.close();
     };
   }, [loadCatalog]);
@@ -304,16 +311,16 @@ export default function App() {
     id: 0,
     title: 'Beleza e elegância em cada detalhe',
     subtitle:
-      'Bijuterias selecionadas com banho dourado hipoalergênico, peças exclusivas a partir de R$ 10,00 e entrega rápida para todo o Brasil.',
+      'Bijuterias selecionadas com banho dourado hipoalergênico, peças delicadas e entrega rápida para todo o Brasil.',
     cta_text: 'Explorar Coleção',
     cta_category: 'all',
-    image_url: '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg',
+    image_url: '/assets/aistudio/Gemini_Generated_Image_jwylupjwylupjwyl_8ff55566.jpg',
     active: true,
     sort_order: 1,
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#FDF8F3] text-[#2D1B12]">
+    <div className="min-h-screen flex flex-col bg-[#FFF4EB] text-[#3D2113]">
       <Header
         activeView={view}
         onNavigate={handleNavigate}
@@ -328,28 +335,28 @@ export default function App() {
       <main className="flex-1">
         {/* ==================== HOME VIEW ==================== */}
         {view === 'home' && (
-          <div className="space-y-20">
-            {/* Section 1: Hero Banner */}
-            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 sm:pt-10">
-              <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch rounded-2xl overflow-hidden bg-[#FFFDF9] border border-[#EAD5BC]">
-                <div className="lg:col-span-5 p-8 sm:p-12 lg:p-14 flex flex-col justify-center gap-6">
-                  <div className="space-y-4">
-                    <p className="text-xs font-semibold tracking-wider text-[#D94A12] uppercase">
+          <div className="space-y-14 sm:space-y-20">
+            {/* Section 1: Hero Banner — Vibrant Orange Showcase featuring Suzy Bely Storefront Photo */}
+            <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 sm:pt-8">
+              <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch rounded-2xl overflow-hidden bg-gradient-to-br from-[#EA580C] via-[#F97316] to-[#FB923C] border-2 border-[#EA580C]/25 shadow-xl shadow-[#EA580C]/20">
+                <div className="lg:col-span-5 p-6 sm:p-10 lg:p-12 flex flex-col justify-center gap-5 sm:gap-6 order-last lg:order-first text-white">
+                  <div className="space-y-3 sm:space-y-4">
+                    <p className="text-xs font-bold tracking-widest text-[#FFE8D4] uppercase">
                       Suzy Bely · Bijuterias &amp; Acessórios
                     </p>
-                    <h1 className="font-display text-3xl sm:text-4xl lg:text-5xl font-semibold text-[#2D1B12] leading-[1.12] text-balance">
+                    <h1 className="font-display text-2xl sm:text-4xl lg:text-[2.75rem] font-bold text-white leading-[1.12] text-balance drop-shadow-xs">
                       {activeBanner.title}
                     </h1>
-                    <p className="text-sm sm:text-base text-[#5D4030] leading-relaxed max-w-md">
+                    <p className="text-sm sm:text-base text-[#FFF4EB] leading-relaxed max-w-md">
                       {activeBanner.subtitle}
                     </p>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-4 pt-1">
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 sm:gap-3.5 pt-1">
                     <button
                       type="button"
                       onClick={() => handleNavigate('catalog', activeBanner.cta_category || 'all')}
-                      className="inline-flex items-center gap-2 px-6 py-3.5 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] transition-colors cursor-pointer"
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-white text-[#EA580C] text-sm font-bold hover:bg-[#FFF2E6] transition-all shadow-md cursor-pointer min-h-[46px]"
                     >
                       <span>{activeBanner.cta_text}</span>
                       <ArrowRight className="w-4 h-4" />
@@ -357,17 +364,18 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => handleNavigate('catalog', 'promocoes')}
-                      className="px-4 py-3 text-sm font-semibold text-[#2D1B12] hover:text-[#D94A12] transition-colors cursor-pointer"
+                      className="px-5 py-3 rounded-xl border border-white/60 bg-white/10 text-sm font-semibold text-white hover:bg-white/20 transition-colors cursor-pointer text-center min-h-[46px]"
                     >
                       Ver Promoções
                     </button>
                   </div>
                 </div>
 
-                <div className="lg:col-span-7 min-h-[280px] sm:min-h-[380px] lg:min-h-[460px]">
+                <div className="lg:col-span-7 aspect-[16/10] sm:aspect-[16/9] lg:aspect-auto lg:min-h-[460px] order-first lg:order-last bg-[#FFF2E6]">
                   <ResilientImage
                     src={activeBanner.image_url}
                     alt={activeBanner.title}
+                    priority
                     className="w-full h-full object-cover"
                   />
                 </div>
@@ -378,16 +386,19 @@ export default function App() {
             <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div>
-                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#2D1B12]">
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#EA580C] mb-1">
+                    Vitrine Oficial
+                  </p>
+                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113]">
                     Coleção Curada
                   </h2>
-                  <p className="text-sm text-[#664938] mt-1">
+                  <p className="text-sm text-[#7A4D35] mt-1">
                     Navegue livremente por categorias, lançamentos e promoções especiais.
                   </p>
                 </div>
 
                 {/* Segmented Spotlight Filter */}
-                <div className="flex flex-wrap items-center gap-1 p-1 bg-[#F5E6D3]/80 rounded-lg w-fit">
+                <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-1 p-1.5 bg-[#FFE3CC] rounded-xl w-full sm:w-fit border border-[#FDBA74]/60">
                   {[
                     {id: 'featured' as const, label: 'Destaques'},
                     {id: 'new' as const, label: 'Novidades'},
@@ -398,10 +409,10 @@ export default function App() {
                       key={tab.id}
                       type="button"
                       onClick={() => setHomeSpotlight(tab.id)}
-                      className={`px-3.5 py-2 rounded-md text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      className={`px-4 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 min-h-[38px] cursor-pointer ${
                         homeSpotlight === tab.id
-                          ? 'bg-white text-[#2D1B12] shadow-xs'
-                          : 'text-[#664938] hover:text-[#2D1B12]'
+                          ? 'bg-[#EA580C] text-white shadow-xs'
+                          : 'text-[#5E3824] hover:text-[#EA580C]'
                       }`}
                     >
                       {tab.label}
@@ -410,14 +421,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Category quick links */}
-              <div className="flex flex-wrap items-center gap-2 pb-2 border-b border-[#EAD5BC]">
+              {/* Category quick links - swipeable on mobile, wrapped on tablet/desktop */}
+              <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-2 pb-3 border-b border-[#FDBA74]/50">
                 {categories.map((cat) => (
                   <button
                     key={cat.id}
                     type="button"
                     onClick={() => handleNavigate('catalog', cat.slug)}
-                    className="px-4 py-2 rounded-lg bg-[#FFFDF9] border border-[#EAD5BC] text-xs font-medium text-[#2D1B12] hover:border-[#D94A12] hover:text-[#D94A12] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                    className="px-4 py-2.5 rounded-lg bg-[#FFFFFF] border border-[#FDBA74]/70 text-xs font-semibold text-[#3D2113] hover:bg-[#EA580C] hover:border-[#EA580C] hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[40px]"
                   >
                     {cat.name}
                   </button>
@@ -425,16 +436,16 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => handleNavigate('catalog', 'promocoes')}
-                  className="px-4 py-2 rounded-lg bg-[#FFFDF9] border border-[#D94A12]/40 text-xs font-semibold text-[#D94A12] hover:bg-[#D94A12] hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                  className="px-4 py-2.5 rounded-lg bg-gradient-to-r from-[#F97316] to-[#EA580C] text-xs font-bold text-white hover:from-[#EA580C] hover:to-[#C94506] transition-all shadow-xs whitespace-nowrap shrink-0 cursor-pointer min-h-[40px]"
                 >
-                  Peças a partir de R$ 10
+                  Ofertas Especiais
                 </button>
               </div>
 
               {loadingCatalog ? (
-                <div className="py-12 text-center text-sm text-[#664938]">Carregando coleção...</div>
+                <div className="py-12 text-center text-sm text-[#7A4D35]">Carregando coleção...</div>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
                   {homeProducts.map((product) => (
                     <ProductCard
                       key={product.id}
@@ -450,7 +461,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => handleNavigate('catalog', 'all')}
-                  className="inline-flex items-center gap-2 px-6 py-3 rounded-lg border border-[#2D1B12] text-sm font-semibold text-[#2D1B12] hover:bg-[#2D1B12] hover:text-white transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-2 px-7 py-3.5 rounded-xl bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] shadow-md shadow-[#EA580C]/20 transition-colors cursor-pointer min-h-[46px]"
                 >
                   <span>Ver Todo o Catálogo</span>
                   <ArrowRight className="w-4 h-4" />
@@ -458,22 +469,22 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section 3: Sobre a Marca (with user storefront photo) */}
+            {/* Section 3: Sobre a Marca */}
             <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl overflow-hidden">
-                <div className="lg:col-span-6 min-h-[260px]">
+              <div className="grid grid-cols-1 lg:grid-cols-12 items-stretch bg-gradient-to-br from-[#FFFFFF] via-[#FFF6EE] to-[#FFE3CC] border-2 border-[#FDBA74]/60 rounded-2xl overflow-hidden shadow-md shadow-[#EA580C]/10">
+                <div className="lg:col-span-6 min-h-[260px] lg:min-h-[360px]">
                   <ResilientImage
-                    src="/assets/aistudio/processed-B1CAB384-C251-4B9B-80F7-C63E72402DB9_6c46a474.jpeg"
-                    alt="Loja física Suzy Bely Bijuterias e Acessórios"
+                    src="/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg"
+                    alt="Coleção exclusiva Suzy Bely Bijuterias e Acessórios"
                     className="w-full h-full object-cover"
                   />
                 </div>
-                <div className="lg:col-span-6 p-8 sm:p-12 flex flex-col justify-center space-y-5">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-[#D94A12]">Sobre a Marca</p>
-                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#2D1B12] text-balance">
+                <div className="lg:col-span-6 p-7 sm:p-12 flex flex-col justify-center space-y-5">
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#EA580C]">Sobre a Marca</p>
+                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113] text-balance">
                     Elegância acessível, confiança e atendimento humanizado
                   </h2>
-                  <p className="text-sm sm:text-base text-[#5D4030] leading-relaxed">
+                  <p className="text-sm sm:text-base text-[#5E3824] leading-relaxed">
                     Nossa missão é proporcionar beleza, autoestima e elegância através de bijuterias e acessórios acessíveis, oferecendo produtos de qualidade e uma experiência de compra agradável para clientes em todo o Brasil.
                   </p>
                   <div className="pt-1">
@@ -483,7 +494,7 @@ export default function App() {
                         setInstitutionalTab('sobre');
                         handleNavigate('institucional');
                       }}
-                      className="inline-flex items-center gap-2 text-sm font-semibold text-[#D94A12] hover:underline cursor-pointer"
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#EA580C]/10 text-sm font-bold text-[#EA580C] hover:bg-[#EA580C] hover:text-white transition-colors cursor-pointer min-h-[42px]"
                     >
                       <span>Conheça nossa Missão, Visão e Valores</span>
                       <ArrowRight className="w-4 h-4" />
@@ -495,38 +506,43 @@ export default function App() {
 
             {/* Section 4: Depoimentos de Clientes */}
             {testimonials.length > 0 && (
-              <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-                <div>
-                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#2D1B12]">
-                    Quem usa Suzy Bely recomenda
-                  </h2>
-                  <p className="text-sm text-[#664938] mt-1">
-                    Avaliações reais de clientes que receberam nossas peças em casa.
-                  </p>
-                </div>
+              <section className="bg-[#FFE8D4]/70 border-y border-[#FDBA74]/50 py-12 sm:py-16">
+                <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-[#EA580C] mb-1">
+                      Avaliações Reais
+                    </p>
+                    <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113]">
+                      Quem usa Suzy Bely recomenda
+                    </h2>
+                    <p className="text-sm text-[#7A4D35] mt-1">
+                      Clientes que receberam nossas peças em casa e aprovaram cada detalhe.
+                    </p>
+                  </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  {testimonials.map((t) => (
-                    <blockquote
-                      key={t.id}
-                      className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-xl p-6 flex flex-col justify-between gap-4"
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-1 text-[#C49A45]" aria-label={`${t.rating} de 5 estrelas`}>
-                          {Array.from({length: t.rating}).map((_, idx) => (
-                            <Star key={idx} className="w-4 h-4 fill-current" />
-                          ))}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    {testimonials.map((t) => (
+                      <blockquote
+                        key={t.id}
+                        className="bg-[#FFFFFF] border border-[#FDBA74]/60 rounded-xl p-6 flex flex-col justify-between gap-4 shadow-xs"
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-1 text-[#F97316]" aria-label={`${t.rating} de 5 estrelas`}>
+                            {Array.from({length: t.rating}).map((_, idx) => (
+                              <Star key={idx} className="w-4 h-4 fill-current" />
+                            ))}
+                          </div>
+                          <p className="text-sm text-[#5E3824] leading-relaxed">"{t.comment}"</p>
                         </div>
-                        <p className="text-sm text-[#5D4030] leading-relaxed">"{t.comment}"</p>
-                      </div>
-                      <footer className="pt-3 border-t border-[#F5E6D3] text-xs">
-                        <div className="font-semibold text-[#2D1B12]">{t.author_name}</div>
-                        <div className="text-[#8B6F5C]">
-                          {t.author_city} · {t.product_name}
-                        </div>
-                      </footer>
-                    </blockquote>
-                  ))}
+                        <footer className="pt-3 border-t border-[#FFE8D4] text-xs">
+                          <div className="font-semibold text-[#3D2113]">{t.author_name}</div>
+                          <div className="text-[#9A6B50]">
+                            {t.author_city} · {t.product_name}
+                          </div>
+                        </footer>
+                      </blockquote>
+                    ))}
+                  </div>
                 </div>
               </section>
             )}
@@ -537,25 +553,25 @@ export default function App() {
         {view === 'catalog' && (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8">
             <div className="space-y-2">
-              <h1 className="font-display text-3xl sm:text-4xl font-semibold text-[#2D1B12]">
+              <h1 className="font-display text-3xl sm:text-4xl font-semibold text-[#3D2113]">
                 Catálogo de Bijuterias &amp; Acessórios
               </h1>
-              <p className="text-sm text-[#664938]">
+              <p className="text-sm text-[#7A4D35]">
                 Consulte preços, filtre por categoria ou disponibilidade e adicione à sacola sem precisar de login.
               </p>
             </div>
 
             {/* Filters Bar */}
-            <div className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-4 sm:p-5 space-y-4">
+            <div className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-4 sm:p-5 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
                 <div className="lg:col-span-5 relative">
-                  <Search className="w-4 h-4 text-[#8B6F5C] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <Search className="w-4 h-4 text-[#9A6B50] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     placeholder="Pesquisar por nome, material ou cor..."
-                    className="w-full bg-white border border-[#EAD5BC] rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-[#D94A12]"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
 
@@ -566,16 +582,16 @@ export default function App() {
                     value={maxPriceReais}
                     onChange={(e) => setMaxPriceReais(e.target.value)}
                     placeholder="Preço máximo (R$)"
-                    className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#D94A12]"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
 
                 <div className="lg:col-span-4 flex items-center gap-2">
-                  <SlidersHorizontal className="w-4 h-4 text-[#8B6F5C] shrink-0" />
+                  <SlidersHorizontal className="w-4 h-4 text-[#9A6B50] shrink-0" />
                   <select
                     value={sortBy}
                     onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-                    className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#D94A12]"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                   >
                     <option value="featured">Ordenar: Destaques</option>
                     <option value="newest">Ordenar: Lançamentos</option>
@@ -586,8 +602,8 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#F5E6D3]">
-                <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3 pt-2 border-t border-[#FFE8D4]">
+                <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap gap-1.5 pb-1 sm:pb-0">
                   {[
                     {slug: 'all', name: 'Todos'},
                     ...categories.map((c) => ({slug: c.slug, name: c.name})),
@@ -598,10 +614,10 @@ export default function App() {
                       key={cat.slug}
                       type="button"
                       onClick={() => setSelectedCategory(cat.slug)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                      className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[38px] ${
                         selectedCategory === cat.slug
-                          ? 'bg-[#D94A12] text-white'
-                          : 'bg-[#FDF8F3] text-[#5D4030] hover:bg-[#F5E6D3]'
+                          ? 'bg-[#EA580C] text-white'
+                          : 'bg-[#FFF9F4] text-[#5E3824] hover:bg-[#FFE8D4]'
                       }`}
                     >
                       {cat.name}
@@ -609,22 +625,22 @@ export default function App() {
                   ))}
                 </div>
 
-                <div className="flex items-center gap-4 text-xs text-[#5D4030]">
-                  <label className="flex items-center gap-1.5 cursor-pointer">
+                <div className="flex items-center gap-4 text-xs text-[#5E3824]">
+                  <label className="flex items-center gap-2 cursor-pointer min-h-[36px]">
                     <input
                       type="checkbox"
                       checked={onlyInStock}
                       onChange={(e) => setOnlyInStock(e.target.checked)}
-                      className="accent-[#D94A12]"
+                      className="accent-[#EA580C] w-4 h-4"
                     />
                     <span>Em estoque</span>
                   </label>
-                  <label className="flex items-center gap-1.5 cursor-pointer">
+                  <label className="flex items-center gap-2 cursor-pointer min-h-[36px]">
                     <input
                       type="checkbox"
                       checked={onlyNewFilter}
                       onChange={(e) => setOnlyNewFilter(e.target.checked)}
-                      className="accent-[#D94A12]"
+                      className="accent-[#EA580C] w-4 h-4"
                     />
                     <span>Novidades</span>
                   </label>
@@ -633,8 +649,8 @@ export default function App() {
             </div>
 
             {filteredCatalog.length === 0 ? (
-              <div className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-12 text-center space-y-3">
-                <p className="font-display text-xl text-[#2D1B12]">Nenhuma peça encontrada com esses filtros</p>
+              <div className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-12 text-center space-y-3">
+                <p className="font-display text-xl text-[#3D2113]">Nenhuma peça encontrada com esses filtros</p>
                 <button
                   type="button"
                   onClick={() => {
@@ -644,13 +660,13 @@ export default function App() {
                     setOnlyNewFilter(false);
                     setMaxPriceReais('');
                   }}
-                  className="px-4 py-2 rounded-lg border border-[#2D1B12] text-xs font-semibold cursor-pointer"
+                  className="px-4 py-2.5 rounded-lg border border-[#3D2113] text-xs font-semibold cursor-pointer min-h-[44px]"
                 >
                   Limpar Filtros
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 lg:gap-8">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-6 lg:gap-8">
                 {filteredCatalog.map((product) => (
                   <ProductCard
                     key={product.id}
@@ -683,6 +699,7 @@ export default function App() {
             addresses={addresses}
             initialCep={checkoutCep}
             initialShipping={checkoutShipping}
+            storeSettings={storeSettings}
             onAuthSuccess={(loggedUser, userAddresses) => {
               setUser(loggedUser);
               setAddresses(userAddresses);
@@ -713,12 +730,12 @@ export default function App() {
             />
           ) : (
             <div className="max-w-lg mx-auto px-4 py-16 text-center space-y-4">
-              <h1 className="font-display text-2xl text-[#2D1B12]">Acesse sua Área do Cliente</h1>
-              <p className="text-sm text-[#664938]">Entre com seu e-mail e senha para acompanhar pedidos e endereços.</p>
+              <h1 className="font-display text-2xl text-[#3D2113]">Acesse sua Área do Cliente</h1>
+              <p className="text-sm text-[#7A4D35]">Entre com seu e-mail e senha para acompanhar pedidos e endereços.</p>
               <button
                 type="button"
                 onClick={() => setAuthModalOpen(true)}
-                className="px-6 py-3 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] cursor-pointer"
+                className="px-6 py-3 rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] cursor-pointer"
               >
                 Entrar ou Cadastrar
               </button>
@@ -740,6 +757,7 @@ export default function App() {
       </main>
 
       <Footer
+        storeSettings={storeSettings}
         onNavigate={handleNavigate}
         onOpenPolicy={(tab) => {
           setInstitutionalTab(tab);
@@ -751,6 +769,7 @@ export default function App() {
         open={cartOpen}
         onClose={() => setCartOpen(false)}
         items={cartItems}
+        storeSettings={storeSettings}
         onUpdateQty={handleUpdateCartQty}
         onRemoveItem={handleRemoveCartItem}
         onCheckout={(cep, shipping) => {
@@ -771,6 +790,9 @@ export default function App() {
           }
         }}
       />
+
+      <PWAInstallPrompt />
+      <OfflineIndicator />
     </div>
   );
 }

@@ -111,6 +111,21 @@ export function isSafeImageUrl(url: unknown): boolean {
   }
 }
 
+export function isSafeExternalHttpUrl(url: unknown): string {
+  if (typeof url !== 'string') return '';
+  const trimmed = url.trim().slice(0, 400);
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return parsed.toString();
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
 export function csrfProtection(req: Request, res: Response, next: NextFunction): void {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
     next();

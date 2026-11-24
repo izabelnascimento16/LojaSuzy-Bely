@@ -148,7 +148,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
     setSuccessMsg('');
     setLoading(true);
     try {
-      const res = await apiRequest<{message: string; previewResetCode?: string}>('/api/auth/forgot-password', {
+      const res = await apiRequest<{message: string; previewResetCode?: string; emailDispatched?: boolean}>('/api/auth/forgot-password', {
         method: 'POST',
         body: {email: forgotEmail},
       });
@@ -156,6 +156,9 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
       if (res.previewResetCode) {
         setPreviewResetCode(res.previewResetCode);
         setResetCode(res.previewResetCode);
+      } else {
+        setPreviewResetCode('');
+        setResetCode('');
       }
       setResetStep('verify');
     } catch (err) {
@@ -188,7 +191,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
   return (
     <div className="space-y-5">
       {/* Segmented mode selector */}
-      <div className="flex items-center gap-1 p-1 bg-[#F5E6D3]/70 rounded-lg">
+      <div className="flex items-center gap-1 p-1 bg-[#FFE8D4]/70 rounded-lg">
         <button
           type="button"
           onClick={() => {
@@ -196,8 +199,8 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
             setError('');
             setSuccessMsg('');
           }}
-          className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
-            mode === 'login' ? 'bg-white text-[#2D1B12] shadow-xs' : 'text-[#664938] hover:text-[#2D1B12]'
+          className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
+            mode === 'login' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
           }`}
         >
           Já tenho conta
@@ -209,8 +212,8 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
             setError('');
             setSuccessMsg('');
           }}
-          className={`flex-1 py-2 text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
-            mode === 'register' ? 'bg-white text-[#2D1B12] shadow-xs' : 'text-[#664938] hover:text-[#2D1B12]'
+          className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
+            mode === 'register' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
           }`}
         >
           Criar cadastro
@@ -218,7 +221,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
       </div>
 
       {error && (
-        <div className="p-3.5 rounded-lg bg-[#D94A12]/10 border border-[#D94A12]/30 text-sm text-[#B83C0B] flex items-start gap-2.5">
+        <div className="p-3.5 rounded-lg bg-[#EA580C]/10 border border-[#EA580C]/30 text-sm text-[#C94506] flex items-start gap-2.5">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <span>{error}</span>
         </div>
@@ -234,19 +237,19 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
       {mode === 'login' && (
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-[#2D1B12] mb-1.5">E-mail</label>
+            <label className="block text-xs font-semibold text-[#3D2113] mb-1.5">E-mail</label>
             <input
               type="email"
               required
               value={loginEmail}
               onChange={(e) => setLoginEmail(e.target.value)}
               placeholder="seuemail@exemplo.com.br"
-              className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm text-[#2D1B12] focus:outline-none focus:border-[#D94A12]"
+              className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm text-[#3D2113] focus:outline-none focus:border-[#EA580C]"
             />
           </div>
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="block text-xs font-semibold text-[#2D1B12]">Senha</label>
+              <label className="block text-xs font-semibold text-[#3D2113]">Senha</label>
               <button
                 type="button"
                 onClick={() => {
@@ -254,7 +257,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
                   setError('');
                   setSuccessMsg('');
                 }}
-                className="text-xs font-medium text-[#D94A12] hover:underline cursor-pointer"
+                className="text-xs font-medium text-[#EA580C] hover:underline cursor-pointer"
               >
                 Esqueci minha senha
               </button>
@@ -265,13 +268,13 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
               value={loginPassword}
               onChange={(e) => setLoginPassword(e.target.value)}
               placeholder="Sua senha"
-              className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm text-[#2D1B12] focus:outline-none focus:border-[#D94A12]"
+              className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm text-[#3D2113] focus:outline-none focus:border-[#EA580C]"
             />
           </div>
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full py-3 min-h-[46px] rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] transition-colors flex items-center justify-center gap-2 cursor-pointer"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
             <span>Entrar na Conta</span>
@@ -283,23 +286,23 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
         <div className="space-y-4">
           {resetStep === 'request' ? (
             <form onSubmit={handleRequestReset} className="space-y-4">
-              <p className="text-xs text-[#664938]">
+              <p className="text-xs text-[#7A4D35]">
                 Informe o e-mail cadastrado para gerar seu código seguro de redefinição de senha.
               </p>
               <div>
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1.5">E-mail cadastrado</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1.5">E-mail cadastrado</label>
                 <input
                   type="email"
                   required
                   value={forgotEmail}
                   onChange={(e) => setForgotEmail(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-2.5 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] cursor-pointer"
+                className="w-full py-2.5 rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] cursor-pointer"
               >
                 {loading ? 'Enviando...' : 'Solicitar Recuperação'}
               </button>
@@ -307,48 +310,48 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
           ) : (
             <form onSubmit={handleConfirmReset} className="space-y-3">
               {previewResetCode && (
-                <div className="p-2.5 rounded-lg bg-[#FDF8F3] border border-[#EAD5BC] text-xs text-[#5D4030]">
+                <div className="p-2.5 rounded-lg bg-[#FFF9F4] border border-[#F2D2B6] text-xs text-[#5E3824]">
                   Código temporário de recuperação: <span className="font-mono font-semibold">{previewResetCode}</span>
                 </div>
               )}
               <div>
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Código de recuperação</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Código de recuperação</label>
                 <input
                   type="text"
                   required
                   value={resetCode}
                   onChange={(e) => setResetCode(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Nova senha</label>
+                  <label className="block text-xs font-semibold text-[#3D2113] mb-1">Nova senha</label>
                   <input
                     type="password"
                     required
                     minLength={6}
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Confirmar senha</label>
+                  <label className="block text-xs font-semibold text-[#3D2113] mb-1">Confirmar senha</label>
                   <input
                     type="password"
                     required
                     minLength={6}
                     value={confirmNewPassword}
                     onChange={(e) => setConfirmNewPassword(e.target.value)}
-                    className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
               </div>
               <button
                 type="submit"
                 disabled={loading}
-                className="w-full py-2.5 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] cursor-pointer"
+                className="w-full py-2.5 rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] cursor-pointer"
               >
                 Redefinir Senha
               </button>
@@ -357,7 +360,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
           <button
             type="button"
             onClick={() => setMode('login')}
-            className="text-xs font-medium text-[#664938] hover:text-[#2D1B12] cursor-pointer"
+            className="text-xs font-medium text-[#7A4D35] hover:text-[#3D2113] cursor-pointer"
           >
             Voltar para o login
           </button>
@@ -368,19 +371,19 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
         <form onSubmit={handleRegister} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Nome completo *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Nome completo *</label>
               <input
                 type="text"
                 required
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="Ex: Maria Clara Oliveira"
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">CPF *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">CPF *</label>
               <input
                 type="text"
                 inputMode="numeric"
@@ -389,12 +392,12 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
                 onChange={(e) => setCpf(formatCpfInput(e.target.value))}
                 placeholder="000.000.000-00"
                 maxLength={14}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Celular com DDD *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Celular com DDD *</label>
               <input
                 type="tel"
                 inputMode="numeric"
@@ -403,52 +406,52 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
                 onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
                 placeholder="(11) 99999-9999"
                 maxLength={15}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
               />
             </div>
 
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">E-mail *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">E-mail *</label>
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="seuemail@exemplo.com.br"
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Senha (mín. 6 dígitos) *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Senha (mín. 6 dígitos) *</label>
               <input
                 type="password"
                 required
                 minLength={6}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Confirmar senha *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Confirmar senha *</label>
               <input
                 type="password"
                 required
                 minLength={6}
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
               />
             </div>
           </div>
 
-          <div className="pt-3 border-t border-[#EAD5BC] space-y-3">
-            <h4 className="text-xs font-semibold text-[#2D1B12]">Endereço de entrega (Brasil)</h4>
+          <div className="pt-3 border-t border-[#F2D2B6] space-y-3">
+            <h4 className="text-xs font-semibold text-[#3D2113]">Endereço de entrega (Brasil)</h4>
             <div className="grid grid-cols-1 sm:grid-cols-6 gap-3">
               <div className="sm:col-span-3">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">CEP *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">CEP *</label>
                 <div className="flex gap-1.5">
                   <input
                     type="text"
@@ -464,13 +467,13 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
                     }}
                     placeholder="00000-000"
                     maxLength={9}
-                    className="flex-1 bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#D94A12]"
+                    className="flex-1 bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
                   />
                   <button
                     type="button"
                     onClick={() => handleLookupCep(cep)}
                     aria-label="Consultar CEP"
-                    className="px-3 py-2 rounded-lg border border-[#EAD5BC] bg-[#FDF8F3] text-[#2D1B12] hover:bg-[#F5E6D3] cursor-pointer"
+                    className="px-3 py-2 rounded-lg border border-[#F2D2B6] bg-[#FFF9F4] text-[#3D2113] hover:bg-[#FFE8D4] cursor-pointer"
                   >
                     {cepLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
                   </button>
@@ -478,11 +481,11 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
               </div>
 
               <div className="sm:col-span-3">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Estado (UF) *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Estado (UF) *</label>
                 <select
                   value={state}
                   onChange={(e) => setState(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 >
                   {UFS.map((uf) => (
                     <option key={uf} value={uf}>
@@ -493,68 +496,68 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
               </div>
 
               <div className="sm:col-span-4">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Rua / Logradouro *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Rua / Logradouro *</label>
                 <input
                   type="text"
                   required
                   value={street}
                   onChange={(e) => setStreet(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
 
               <div className="sm:col-span-2">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Número *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Número *</label>
                 <input
                   type="text"
                   required
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
 
               <div className="sm:col-span-3">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Complemento (opcional)</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Complemento (opcional)</label>
                 <input
                   type="text"
                   value={complement}
                   onChange={(e) => setComplement(e.target.value)}
                   placeholder="Apto, bloco..."
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
 
               <div className="sm:col-span-3">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Bairro *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Bairro *</label>
                 <input
                   type="text"
                   required
                   value={neighborhood}
                   onChange={(e) => setNeighborhood(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
 
               <div className="sm:col-span-6">
-                <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Cidade *</label>
+                <label className="block text-xs font-semibold text-[#3D2113] mb-1">Cidade *</label>
                 <input
                   type="text"
                   required
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
-                  className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#D94A12]"
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-[#EA580C]"
                 />
               </div>
             </div>
           </div>
 
-          <label className="flex items-start gap-2.5 text-xs text-[#5D4030] cursor-pointer pt-1">
+          <label className="flex items-start gap-2.5 text-xs text-[#5E3824] cursor-pointer pt-1">
             <input
               type="checkbox"
               checked={lgpdConsent}
               onChange={(e) => setLgpdConsent(e.target.checked)}
-              className="mt-0.5 accent-[#D94A12]"
+              className="mt-0.5 accent-[#EA580C]"
             />
             <span>
               Concordo com a coleta e tratamento dos meus dados pessoais (nome, CPF, e-mail, celular e endereço) exclusivamente para emissão de pedidos, entrega e atendimento, conforme a{' '}
@@ -565,7 +568,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-3 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            className="w-full py-3 min-h-[46px] rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] transition-colors flex items-center justify-center gap-2 cursor-pointer"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
             <span>Finalizar Cadastro</span>

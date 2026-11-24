@@ -5,11 +5,24 @@ import path from 'node:path';
 import express from 'express';
 import type {Request, Response, NextFunction} from 'express';
 import {createServer as createViteServer} from 'vite';
-import {db, initDatabase} from './server/db.ts';
+import {db, getStoreSettings, initDatabase, type StoreSettingsRow} from './server/db.ts';
+import {
+  getRecentEmailLogs,
+  getSmtpSummary,
+  isSmtpConfigured,
+  sendOrderConfirmationEmail,
+  sendOrderStatusEmail,
+  sendOwnerNewOrderAlertEmail,
+  sendPasswordResetEmail,
+  sendTestEmail,
+  sendWelcomeEmail,
+} from './server/email.ts';
+import {generatePixPayload, type PixKeyType} from './server/pix.ts';
 import {
   csrfProtection,
   hashPassword,
   hashResetToken,
+  isSafeExternalHttpUrl,
   isSafeImageUrl,
   maskCpf,
   sanitizeText,
@@ -38,9 +51,22 @@ const PORT = 3000;
 app.set('trust proxy', 1);
 app.use(express.json({limit: '2mb'}));
 
-app.use((_req: Request, res: Response, next: NextFunction) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+
+  if (process.env.NODE_ENV === 'production') {
+    const proto = req.headers['x-forwarded-proto'];
+    const host = String(req.headers.host || '');
+    const isLocalHost = host.startsWith('localhost') || host.startsWith('127.0.0.1');
+    if (proto === 'http' && !isLocalHost && req.path !== '/api/health') {
+      res.redirect(301, `https://${host}${req.originalUrl}`);
+      return;
+    }
+    if (req.secure || proto === 'https') {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+  }
   next();
 });
 
@@ -95,15 +121,83 @@ function requireAdminPermission(permission?: string) {
       res.status(401).json({error: 'Acesso restrito. Faça login administrativo.'});
       return;
     }
-    if (req.auth.role !== 'admin' && req.auth.role !== 'staff') {
+    const userRow = db
+      .prepare('SELECT id, active, role, permissions_json FROM users WHERE id = ?')
+      .get(req.auth.userId) as {id: number; active: number; role: string; permissions_json: string} | undefined;
+    if (!userRow || !userRow.active) {
+      res.status(401).json({error: 'Sessão inválida ou conta desativada.'});
+      return;
+    }
+    if (userRow.role !== 'admin' && userRow.role !== 'staff') {
       res.status(403).json({error: 'Permissão insuficiente para acessar o painel.'});
       return;
     }
-    if (req.auth.role === 'staff' && permission && !req.auth.permissions.includes(permission)) {
+    const livePermissions = JSON.parse(userRow.permissions_json || '[]') as string[];
+    if (userRow.role === 'staff' && permission && !livePermissions.includes(permission)) {
       res.status(403).json({error: 'Seu perfil de colaborador não possui esta permissão.'});
       return;
     }
+    req.auth.role = userRow.role as 'admin' | 'staff';
+    req.auth.permissions = livePermissions;
     next();
+  };
+}
+
+function serializePublicSettings(s: StoreSettingsRow) {
+  return {
+    enablePix: Boolean(s.enable_pix),
+    enableCreditCard: Boolean(s.enable_credit_card),
+    enableBoleto: Boolean(s.enable_boleto),
+    pixDiscountPercent: s.pix_discount_percent,
+    maxInstallments: s.max_installments,
+    hasRealPixKey: Boolean(s.pix_key.trim()),
+    hasExternalPaymentLink: Boolean(s.external_payment_link.trim()),
+    mercadoPagoConfigured: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN?.trim()),
+    freeShippingThresholdCents: s.free_shipping_threshold_cents,
+    localDeliveryEnabled: Boolean(s.local_delivery_enabled),
+    localDeliveryLabel: s.local_delivery_label,
+    localDeliveryPriceCents: s.local_delivery_price_cents,
+    localDeliveryDays: s.local_delivery_days,
+    whatsappNumber: s.whatsapp_number,
+    contactEmail: s.contact_email,
+    storeCity: s.store_city,
+  };
+}
+
+function serializeAdminSettings(s: StoreSettingsRow) {
+  return {
+    enablePix: Boolean(s.enable_pix),
+    enableCreditCard: Boolean(s.enable_credit_card),
+    enableBoleto: Boolean(s.enable_boleto),
+    pixKey: s.pix_key,
+    pixKeyType: s.pix_key_type,
+    pixMerchantName: s.pix_merchant_name,
+    pixMerchantCity: s.pix_merchant_city,
+    pixDiscountPercent: s.pix_discount_percent,
+    maxInstallments: s.max_installments,
+    externalPaymentLink: s.external_payment_link,
+    freeShippingThresholdCents: s.free_shipping_threshold_cents,
+    shippingMode: s.shipping_mode,
+    fixedPacCents: s.fixed_pac_cents,
+    fixedSedexCents: s.fixed_sedex_cents,
+    shippingExtraDays: s.shipping_extra_days,
+    localDeliveryEnabled: Boolean(s.local_delivery_enabled),
+    localDeliveryLabel: s.local_delivery_label,
+    localDeliveryPriceCents: s.local_delivery_price_cents,
+    localDeliveryDays: s.local_delivery_days,
+    whatsappNumber: s.whatsapp_number,
+    contactEmail: s.contact_email,
+    storeCity: s.store_city,
+    emailSenderName: s.email_sender_name,
+    emailOnRegister: Boolean(s.email_on_register),
+    emailOnOrder: Boolean(s.email_on_order),
+    emailOnStatus: Boolean(s.email_on_status),
+    emailNotifyOwner: Boolean(s.email_notify_owner),
+    gatewayStatus: {
+      mercadoPagoConfigured: Boolean(process.env.MERCADOPAGO_ACCESS_TOKEN?.trim()),
+      appUrlConfigured: Boolean(process.env.APP_URL?.trim()),
+    },
+    emailStatus: getSmtpSummary(),
   };
 }
 
@@ -172,11 +266,96 @@ app.get('/api/events', (req: Request, res: Response) => {
   });
 });
 
+// Server-to-server Mercado Pago Webhook (verified directly via Mercado Pago API)
+app.post('/api/webhooks/mercadopago', async (req: Request, res: Response) => {
+  const mpToken = process.env.MERCADOPAGO_ACCESS_TOKEN?.trim();
+  if (!mpToken) {
+    res.status(200).json({received: true, ignored: 'gateway_not_configured'});
+    return;
+  }
+
+  const rawId = req.body?.data?.id ?? req.query['data.id'] ?? req.query.id;
+  const paymentId = String(rawId || '').replace(/\D/g, '');
+  const topic = String(req.body?.type || req.query.topic || req.query.type || '');
+
+  if (!paymentId || (topic && topic !== 'payment')) {
+    res.status(200).json({received: true});
+    return;
+  }
+
+  try {
+    const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
+      headers: {Authorization: `Bearer ${mpToken}`},
+    });
+    if (!mpRes.ok) {
+      res.status(200).json({received: true});
+      return;
+    }
+    const mpData = (await mpRes.json()) as {
+      id?: number | string;
+      status?: string;
+      external_reference?: string;
+    };
+
+    if (mpData.status === 'approved') {
+      const orderRow = db
+        .prepare(
+          `SELECT o.id, o.order_number, o.status
+           FROM orders o
+           LEFT JOIN payments p ON p.order_id = o.id
+           WHERE o.order_number = ? OR p.external_id = ?
+           LIMIT 1`
+        )
+        .get(String(mpData.external_reference || ''), String(mpData.id || paymentId)) as
+        | {id: number; order_number: string; status: string}
+        | undefined;
+
+      if (orderRow && orderRow.status === 'aguardando_pagamento') {
+        db.transaction(() => {
+          db.prepare("UPDATE orders SET status = 'pago', payment_status = 'approved', updated_at = datetime('now') WHERE id = ?").run(orderRow.id);
+          db.prepare("UPDATE payments SET status = 'approved', external_id = ? WHERE order_id = ?").run(
+            String(mpData.id || paymentId),
+            orderRow.id
+          );
+          db.prepare("UPDATE shipments SET status = 'em_separacao', updated_at = datetime('now') WHERE order_id = ?").run(orderRow.id);
+          logAudit(null, 'mercadopago@webhook', 'WEBHOOK_PAYMENT_APPROVED', 'order', orderRow.id, `Pagamento aprovado via Mercado Pago (${orderRow.order_number})`);
+        })();
+        broadcastEvent('order_updated', {orderId: orderRow.id, status: 'pago'});
+
+        const customer = db
+          .prepare(
+            `SELECT u.email, u.full_name
+             FROM orders o
+             JOIN users u ON u.id = o.user_id
+             WHERE o.id = ?`
+          )
+          .get(orderRow.id) as {email: string; full_name: string} | undefined;
+        if (customer) {
+          void sendOrderStatusEmail({
+            to: customer.email,
+            customerName: customer.full_name,
+            orderNumber: orderRow.order_number,
+            status: 'pago',
+          });
+        }
+      }
+    }
+  } catch {
+    // Always acknowledge webhook gracefully
+  }
+
+  res.status(200).json({received: true});
+});
+
 app.use('/api', attachAuth);
 app.use('/api', csrfProtection);
 
 app.get('/api/health', (_req: Request, res: Response) => {
   res.json({status: 'ok', store: 'Suzy Bely Bijuterias & Acessórios'});
+});
+
+app.get('/api/settings/public', (_req: Request, res: Response) => {
+  res.json({storeSettings: serializePublicSettings(getStoreSettings())});
 });
 
 // Public Storefront Catalog
@@ -208,6 +387,7 @@ app.get('/api/catalog', (_req: Request, res: Response) => {
     products: enrichProducts(rawProducts),
     banners,
     testimonials,
+    storeSettings: serializePublicSettings(getStoreSettings()),
   });
 });
 
@@ -376,29 +556,51 @@ app.post('/api/shipping/calculate', (req: Request, res: Response) => {
     return;
   }
 
-  const freight = calculateFreightByCep(cepDigits, subtotalCents);
+  const settings = getStoreSettings();
+  const freight = calculateFreightByCep(cepDigits, subtotalCents, {
+    freeShippingThresholdCents: settings.free_shipping_threshold_cents,
+    shippingMode: settings.shipping_mode,
+    fixedPacCents: settings.fixed_pac_cents,
+    fixedSedexCents: settings.fixed_sedex_cents,
+    shippingExtraDays: settings.shipping_extra_days,
+  });
+
+  const options: Record<string, unknown>[] = [];
+  if (settings.local_delivery_enabled) {
+    options.push({
+      id: 'local',
+      name: settings.local_delivery_label || 'Entrega Local / Retirada (Ji-Paraná, RO)',
+      carrier: 'Loja Suzy Bely',
+      service: 'LOCAL',
+      priceCents: Math.max(0, settings.local_delivery_price_cents),
+      estimatedDays: Math.max(1, settings.local_delivery_days),
+    });
+  }
+
+  options.push(
+    {
+      id: 'pac',
+      name: freight.freeEligible ? 'Frete Grátis (PAC)' : 'Correios PAC',
+      carrier: 'Correios',
+      service: 'PAC',
+      priceCents: freight.pacCents,
+      estimatedDays: freight.pacDays,
+    },
+    {
+      id: 'sedex',
+      name: 'Correios SEDEX Expresso',
+      carrier: 'Correios',
+      service: 'SEDEX',
+      priceCents: freight.sedexCents,
+      estimatedDays: freight.sedexDays,
+    }
+  );
+
   res.json({
     cep: formatCep(cepDigits),
     regionLabel: freight.regionLabel,
     freeEligible: freight.freeEligible,
-    options: [
-      {
-        id: 'pac',
-        name: freight.freeEligible ? 'Frete Grátis (PAC)' : 'Correios PAC',
-        carrier: 'Correios',
-        service: 'PAC',
-        priceCents: freight.pacCents,
-        estimatedDays: freight.pacDays,
-      },
-      {
-        id: 'sedex',
-        name: 'Correios SEDEX Expresso',
-        carrier: 'Correios',
-        service: 'SEDEX',
-        priceCents: freight.sedexCents,
-        estimatedDays: freight.sedexDays,
-      },
-    ],
+    options,
   });
 });
 
@@ -446,7 +648,7 @@ app.post('/api/cart/sync', (req: AuthedRequest, res: Response) => {
 });
 
 // Customer Auth Routes
-app.post('/api/auth/register', (req: Request, res: Response) => {
+app.post('/api/auth/register', async (req: Request, res: Response) => {
   const body = req.body || {};
   const fullName = sanitizeText(body.fullName, 120);
   const cpfDigits = onlyDigits(String(body.cpf || ''));
@@ -536,6 +738,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
   });
 
   const addresses = db.prepare('SELECT * FROM addresses WHERE user_id = ?').all(createdUserId);
+  const emailResult = await sendWelcomeEmail({to: email, fullName});
 
   res.status(201).json({
     token,
@@ -549,6 +752,7 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
       permissions: [],
     },
     addresses,
+    emailDispatched: emailResult.dispatched,
   });
 });
 
@@ -606,14 +810,16 @@ app.post('/api/auth/login', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+app.post('/api/auth/forgot-password', async (req: Request, res: Response) => {
   const email = sanitizeText(req.body?.email, 140).toLowerCase();
   if (!isValidEmail(email)) {
     res.status(400).json({error: 'Informe um e-mail válido.'});
     return;
   }
 
-  const user = db.prepare('SELECT id FROM users WHERE email = ? AND active = 1').get(email) as {id: number} | undefined;
+  const user = db
+    .prepare('SELECT id, full_name FROM users WHERE email = ? AND active = 1')
+    .get(email) as {id: number; full_name: string} | undefined;
   if (!user) {
     // Do not reveal account existence
     res.json({
@@ -628,10 +834,26 @@ app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
     "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+30 minutes'))"
   ).run(user.id, tokenHash);
 
-  // In preview without external SMTP, provide explicit recovery code feedback only for the requester session
+  if (isSmtpConfigured()) {
+    const emailResult = await sendPasswordResetEmail({
+      to: email,
+      fullName: user.full_name,
+      resetCode: rawToken,
+    });
+    if (emailResult.dispatched) {
+      res.json({
+        message: 'Se este e-mail estiver cadastrado, enviamos o código de recuperação para a sua caixa de entrada (válido por 30 minutos).',
+        emailDispatched: true,
+      });
+      return;
+    }
+  }
+
+  // Fallback when SMTP is unavailable or fails in preview
   res.json({
     message: 'Código de recuperação gerado com validade de 30 minutos.',
     previewResetCode: rawToken,
+    emailDispatched: false,
   });
 });
 
@@ -832,7 +1054,7 @@ app.get('/api/account/orders', requireAuth, (req: AuthedRequest, res: Response) 
     .all(req.auth!.userId) as Record<string, unknown>[];
 
   const itemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
-  const payStmt = db.prepare('SELECT id, gateway, method, status, amount_cents, pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand, created_at FROM payments WHERE order_id = ?');
+  const payStmt = db.prepare('SELECT id, gateway, method, status, amount_cents, pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand, checkout_url, created_at FROM payments WHERE order_id = ?');
   const shipStmt = db.prepare('SELECT * FROM shipments WHERE order_id = ?');
 
   const enriched = orders.map((order) => ({
@@ -921,8 +1143,9 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
   const b = req.body || {};
   const items = Array.isArray(b.items) ? b.items : [];
   const shippingAddress = b.address || {};
-  const shippingMethodId = b.shippingMethod === 'sedex' ? 'sedex' : 'pac';
+  const shippingMethodId = b.shippingMethod === 'sedex' ? 'sedex' : b.shippingMethod === 'local' ? 'local' : 'pac';
   const paymentMethod = b.paymentMethod as 'pix' | 'credit_card' | 'boleto';
+  const settings = getStoreSettings();
 
   if (items.length === 0) {
     res.status(400).json({error: 'Seu carrinho está vazio.'});
@@ -930,6 +1153,14 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
   }
   if (!['pix', 'credit_card', 'boleto'].includes(paymentMethod)) {
     res.status(400).json({error: 'Forma de pagamento inválida.'});
+    return;
+  }
+  if (
+    (paymentMethod === 'pix' && !settings.enable_pix) ||
+    (paymentMethod === 'credit_card' && !settings.enable_credit_card) ||
+    (paymentMethod === 'boleto' && !settings.enable_boleto)
+  ) {
+    res.status(400).json({error: 'Esta forma de pagamento está desativada no momento pela loja.'});
     return;
   }
 
@@ -946,22 +1177,25 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
     return;
   }
 
+  const mpToken = process.env.MERCADOPAGO_ACCESS_TOKEN?.trim() || '';
+  const safeExternalLink = isSafeExternalHttpUrl(settings.external_payment_link);
+
   let cardLast4 = '';
   let cardBrand = '';
   if (paymentMethod === 'credit_card') {
     const rawCardDigits = onlyDigits(String(b.cardTokenLast4 || b.cardNumber || ''));
-    if (rawCardDigits.length < 4) {
-      res.status(400).json({error: 'Dados do cartão inválidos para tokenização segura.'});
-      return;
+    if (rawCardDigits.length >= 4) {
+      cardLast4 = rawCardDigits.slice(-4);
+      cardBrand = sanitizeText(b.cardBrand || 'Cartão', 30);
     }
-    cardLast4 = rawCardDigits.slice(-4);
-    cardBrand = sanitizeText(b.cardBrand || 'Visa / Mastercard', 30);
     // Notice: full card number & CVV are NEVER persisted to the database
   }
 
   let createdOrder: Record<string, unknown> | null = null;
   let orderNumber = '';
   let totalCents = 0;
+  let shippingCents = 0;
+  let lineItemsForGateway: {title: string; quantity: number; unitPriceCents: number}[] = [];
 
   try {
     const tx = db.transaction(() => {
@@ -1012,22 +1246,36 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
         });
       }
 
-      const freight = calculateFreightByCep(cepDigits, subtotalCents);
-      const shippingCents = shippingMethodId === 'sedex' ? freight.sedexCents : freight.pacCents;
-      const estimatedDays = shippingMethodId === 'sedex' ? freight.sedexDays : freight.pacDays;
-      const shippingLabel = shippingMethodId === 'sedex'
-        ? 'Correios SEDEX Expresso'
-        : freight.freeEligible
-          ? 'Frete Grátis (PAC)'
-          : 'Correios PAC';
+      const freight = calculateFreightByCep(cepDigits, subtotalCents, {
+        freeShippingThresholdCents: settings.free_shipping_threshold_cents,
+        shippingMode: settings.shipping_mode,
+        fixedPacCents: settings.fixed_pac_cents,
+        fixedSedexCents: settings.fixed_sedex_cents,
+        shippingExtraDays: settings.shipping_extra_days,
+      });
 
-      // PIX gets 5% instant discount on subtotal
-      const discountCents = paymentMethod === 'pix' ? Math.round(subtotalCents * 0.05) : 0;
-      totalCents = subtotalCents + shippingCents - discountCents;
+      let estimatedDays = freight.pacDays;
+      let shippingLabel = freight.freeEligible ? 'Frete Grátis (PAC)' : 'Correios PAC';
+      shippingCents = freight.pacCents;
+
+      if (shippingMethodId === 'sedex') {
+        shippingCents = freight.sedexCents;
+        estimatedDays = freight.sedexDays;
+        shippingLabel = 'Correios SEDEX Expresso';
+      } else if (shippingMethodId === 'local' && settings.local_delivery_enabled) {
+        shippingCents = Math.max(0, settings.local_delivery_price_cents);
+        estimatedDays = Math.max(1, settings.local_delivery_days);
+        shippingLabel = settings.local_delivery_label || 'Entrega Local / Retirada (Ji-Paraná, RO)';
+      }
+
+      const pixPct = Math.max(0, Math.min(30, settings.pix_discount_percent));
+      const discountCents = paymentMethod === 'pix' && pixPct > 0 ? Math.round((subtotalCents * pixPct) / 100) : 0;
+      totalCents = Math.max(100, subtotalCents + shippingCents - discountCents);
 
       orderNumber = `SB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
-      const initialStatus = paymentMethod === 'credit_card' ? 'pago' : 'aguardando_pagamento';
-      const initialPaymentStatus = paymentMethod === 'credit_card' ? 'approved' : 'pending';
+      // Never auto-approve unpaid orders; real confirmation happens via Mercado Pago webhook or store admin
+      const initialStatus = 'aguardando_pagamento';
+      const initialPaymentStatus = 'pending';
 
       const cleanAddressJson = JSON.stringify({
         cep: formatCep(cepDigits),
@@ -1071,43 +1319,74 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
         insertOrderItem.run(orderId, li.productId, li.name, li.unitPriceCents, li.quantity, li.lineTotalCents);
       }
 
+      lineItemsForGateway = lineItems.map((li) => ({
+        title: li.name,
+        quantity: li.quantity,
+        unitPriceCents: li.unitPriceCents,
+      }));
+
+      const realEmvPix =
+        paymentMethod === 'pix' && settings.pix_key.trim()
+          ? generatePixPayload({
+              pixKey: settings.pix_key,
+              pixKeyType: settings.pix_key_type as PixKeyType,
+              merchantName: settings.pix_merchant_name,
+              merchantCity: settings.pix_merchant_city,
+              amountCents: totalCents,
+              txId: orderNumber,
+            })
+          : '';
+
       const pixCopyPaste =
         paymentMethod === 'pix'
-          ? `00020126580014BR.GOV.BCB.PIX0136suzybely@pagamentos.com.br520400005303986540${(totalCents / 100).toFixed(2)}5802BR5910SUZY BELY6009SAO PAULO62140510${orderNumber}6304`
+          ? realEmvPix ||
+            generatePixPayload({
+              pixKey: settings.contact_email || 'suzybely@suzybely.com.br',
+              pixKeyType: 'email',
+              merchantName: settings.pix_merchant_name || 'SUZY BELY BIJUTERIAS',
+              merchantCity: settings.pix_merchant_city || 'JI-PARANA',
+              amountCents: totalCents,
+              txId: orderNumber,
+            })
           : '';
+
       const boletoBarcode =
         paymentMethod === 'boleto'
           ? `23793.38128 60000.000003 00000.000408 1 ${String(10000000000 + totalCents).slice(-11)}`
           : '';
 
+      const initialCheckoutUrl = paymentMethod !== 'pix' && safeExternalLink ? safeExternalLink : '';
+
       db.prepare(`
         INSERT INTO payments (
           order_id, gateway, method, external_id, status, amount_cents,
-          pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand, checkout_url
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         orderId,
-        process.env.MERCADOPAGO_ACCESS_TOKEN ? 'mercadopago' : 'mercadopago_integrado',
+        mpToken ? 'mercadopago' : settings.pix_key.trim() ? 'pix_direto' : 'loja_manual',
         paymentMethod,
-        `MP-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+        `SB-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
         initialPaymentStatus,
         totalCents,
         pixCopyPaste ? `QR-${orderNumber}` : '',
         pixCopyPaste,
         boletoBarcode,
         cardLast4,
-        cardBrand
+        cardBrand,
+        initialCheckoutUrl
       );
 
       db.prepare(`
         INSERT INTO shipments (order_id, carrier, service, cost_cents, estimated_days, status)
-        VALUES (?, 'Correios', ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
       `).run(
         orderId,
+        shippingMethodId === 'local' ? 'Loja Suzy Bely' : 'Correios',
         shippingMethodId.toUpperCase(),
         shippingCents,
         estimatedDays,
-        initialStatus === 'pago' ? 'em_separacao' : 'aguardando_pagamento'
+        'aguardando_pagamento'
       );
 
       createdOrder = {
@@ -1126,6 +1405,10 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
         boletoBarcode,
         cardLast4,
         cardBrand,
+        checkoutUrl: initialCheckoutUrl,
+        hasRealPixKey: Boolean(settings.pix_key.trim()),
+        mercadoPagoConfigured: Boolean(mpToken),
+        whatsappNumber: settings.whatsapp_number,
         items: lineItems,
         emailSentTo: req.auth!.email,
       };
@@ -1138,54 +1421,155 @@ app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response)
     return;
   }
 
-  // Optional live Mercado Pago preference/payment call when MERCADOPAGO_ACCESS_TOKEN is configured
-  if (process.env.MERCADOPAGO_ACCESS_TOKEN && paymentMethod === 'pix' && createdOrder) {
-    try {
-      const mpRes = await fetch('https://api.mercadopago.com/v1/payments', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-          'X-Idempotency-Key': orderNumber,
-        },
-        body: JSON.stringify({
-          transaction_amount: Number((totalCents / 100).toFixed(2)),
-          description: `Pedido ${orderNumber} - Suzy Bely Bijuterias`,
-          payment_method_id: 'pix',
-          payer: {email: req.auth!.email},
-        }),
-      });
-      if (mpRes.ok) {
-        const mpData = (await mpRes.json()) as {
-          id?: number | string;
-          point_of_interaction?: {transaction_data?: {qr_code?: string}};
-        };
-        const liveQr = mpData.point_of_interaction?.transaction_data?.qr_code;
-        if (liveQr && createdOrder) {
-          (createdOrder as Record<string, unknown>).pixCopyPaste = liveQr;
-          db.prepare('UPDATE payments SET external_id = ?, pix_copy_paste = ? WHERE order_id = ?').run(
-            String(mpData.id || ''),
-            liveQr,
-            (createdOrder as {id: number}).id
-          );
+  const rawAppUrl = process.env.APP_URL?.trim() || '';
+  const notificationUrl = rawAppUrl.startsWith('https://')
+    ? `${rawAppUrl.replace(/\/$/, '')}/api/webhooks/mercadopago`
+    : undefined;
+
+  // Live Mercado Pago PIX or Checkout Pro preference when MERCADOPAGO_ACCESS_TOKEN is set on the server
+  if (mpToken && createdOrder) {
+    if (paymentMethod === 'pix') {
+      try {
+        const mpRes = await fetch('https://api.mercadopago.com/v1/payments', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${mpToken}`,
+            'Content-Type': 'application/json',
+            'X-Idempotency-Key': orderNumber,
+          },
+          body: JSON.stringify({
+            transaction_amount: Number((totalCents / 100).toFixed(2)),
+            description: `Pedido ${orderNumber} - Suzy Bely Bijuterias`,
+            payment_method_id: 'pix',
+            external_reference: orderNumber,
+            ...(notificationUrl ? {notification_url: notificationUrl} : {}),
+            payer: {email: req.auth!.email},
+          }),
+        });
+        if (mpRes.ok) {
+          const mpData = (await mpRes.json()) as {
+            id?: number | string;
+            point_of_interaction?: {transaction_data?: {qr_code?: string; ticket_url?: string}};
+          };
+          const liveQr = mpData.point_of_interaction?.transaction_data?.qr_code;
+          const ticketUrl = mpData.point_of_interaction?.transaction_data?.ticket_url || '';
+          if (liveQr) {
+            (createdOrder as Record<string, unknown>).pixCopyPaste = liveQr;
+            (createdOrder as Record<string, unknown>).hasRealPixKey = true;
+            if (ticketUrl) {
+              (createdOrder as Record<string, unknown>).checkoutUrl = ticketUrl;
+            }
+            db.prepare('UPDATE payments SET external_id = ?, pix_copy_paste = ?, checkout_url = ? WHERE order_id = ?').run(
+              String(mpData.id || ''),
+              liveQr,
+              ticketUrl,
+              (createdOrder as {id: number}).id
+            );
+          }
         }
+      } catch {
+        // Keep generated PIX code gracefully
       }
-    } catch {
-      // Keep generated PIX code gracefully
+    } else if (paymentMethod === 'credit_card' || paymentMethod === 'boleto') {
+      try {
+        const prefRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${mpToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            external_reference: orderNumber,
+            items: lineItemsForGateway.map((li) => ({
+              title: li.title,
+              quantity: li.quantity,
+              unit_price: Number((li.unitPriceCents / 100).toFixed(2)),
+              currency_id: 'BRL',
+            })),
+            shipments: {
+              cost: Number((shippingCents / 100).toFixed(2)),
+              mode: 'not_specified',
+            },
+            payment_methods: {
+              installments: Math.max(1, Math.min(12, settings.max_installments)),
+            },
+            ...(notificationUrl ? {notification_url: notificationUrl} : {}),
+            payer: {email: req.auth!.email},
+          }),
+        });
+        if (prefRes.ok) {
+          const prefData = (await prefRes.json()) as {id?: string; init_point?: string};
+          if (prefData.init_point) {
+            (createdOrder as Record<string, unknown>).checkoutUrl = prefData.init_point;
+            db.prepare('UPDATE payments SET external_id = ?, checkout_url = ? WHERE order_id = ?').run(
+              String(prefData.id || ''),
+              prefData.init_point,
+              (createdOrder as {id: number}).id
+            );
+          }
+        }
+      } catch {
+        // Keep fallback external payment link if configured
+      }
     }
   }
 
   broadcastEvent('catalog_updated', {reason: 'order_created'});
   broadcastEvent('order_updated', {orderNumber});
 
+  let emailDispatched = false;
+  if (createdOrder) {
+    const customerRow = db
+      .prepare('SELECT full_name, email FROM users WHERE id = ?')
+      .get(req.auth!.userId) as {full_name: string; email: string} | undefined;
+    const customerName = customerRow?.full_name || 'Cliente';
+    const customerEmail = customerRow?.email || req.auth!.email;
+    const orderObj = createdOrder as {
+      orderNumber: string;
+      totalCents: number;
+      subtotalCents: number;
+      shippingCents: number;
+      discountCents: number;
+      shippingLabel: string;
+      estimatedDays: number;
+      paymentMethod: 'pix' | 'credit_card' | 'boleto';
+      pixCopyPaste?: string;
+      checkoutUrl?: string;
+      items: {name: string; quantity: number; lineTotalCents: number}[];
+      emailDispatched?: boolean;
+    };
+
+    const customerEmailRes = await sendOrderConfirmationEmail({
+      to: customerEmail,
+      customerName,
+      order: orderObj,
+    });
+    emailDispatched = customerEmailRes.dispatched;
+    orderObj.emailDispatched = emailDispatched;
+
+    await sendOwnerNewOrderAlertEmail({
+      customerName,
+      customerEmail,
+      order: {
+        orderNumber: orderObj.orderNumber,
+        totalCents: orderObj.totalCents,
+        paymentMethod: orderObj.paymentMethod,
+        shippingLabel: orderObj.shippingLabel,
+        itemsCount: orderObj.items.reduce((acc, item) => acc + item.quantity, 0),
+      },
+    });
+  }
+
   res.status(201).json({order: createdOrder});
 });
 
-app.post('/api/orders/:id/confirm-pix', requireAuth, (req: AuthedRequest, res: Response) => {
+app.post('/api/orders/:id/confirm-pix', requireAuth, async (req: AuthedRequest, res: Response) => {
   const orderId = Number(req.params.id);
   const order = db
-    .prepare('SELECT id, user_id, payment_method, status FROM orders WHERE id = ? AND user_id = ?')
-    .get(orderId, req.auth!.userId) as {id: number; user_id: number; payment_method: string; status: string} | undefined;
+    .prepare('SELECT id, user_id, order_number, payment_method, status FROM orders WHERE id = ? AND user_id = ?')
+    .get(orderId, req.auth!.userId) as
+    | {id: number; user_id: number; order_number: string; payment_method: string; status: string}
+    | undefined;
 
   if (!order) {
     res.status(404).json({error: 'Pedido não encontrado.'});
@@ -1196,14 +1580,52 @@ app.post('/api/orders/:id/confirm-pix', requireAuth, (req: AuthedRequest, res: R
     return;
   }
 
-  db.transaction(() => {
-    db.prepare("UPDATE orders SET status = 'pago', payment_status = 'approved', updated_at = datetime('now') WHERE id = ?").run(order.id);
-    db.prepare("UPDATE payments SET status = 'approved' WHERE order_id = ?").run(order.id);
-    db.prepare("UPDATE shipments SET status = 'em_separacao', updated_at = datetime('now') WHERE order_id = ?").run(order.id);
-  })();
+  const payment = db
+    .prepare('SELECT external_id, gateway FROM payments WHERE order_id = ?')
+    .get(order.id) as {external_id: string; gateway: string} | undefined;
+  const mpToken = process.env.MERCADOPAGO_ACCESS_TOKEN?.trim();
 
-  broadcastEvent('order_updated', {orderId: order.id, status: 'pago'});
-  res.json({message: 'Pagamento confirmado! Seu pedido já entrou em separação.'});
+  // If linked to a real Mercado Pago payment ID, query Mercado Pago directly
+  if (mpToken && payment?.gateway === 'mercadopago' && /^\d+$/.test(payment.external_id)) {
+    try {
+      const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${payment.external_id}`, {
+        headers: {Authorization: `Bearer ${mpToken}`},
+      });
+      if (mpRes.ok) {
+        const mpData = (await mpRes.json()) as {status?: string};
+        if (mpData.status === 'approved') {
+          db.transaction(() => {
+            db.prepare("UPDATE orders SET status = 'pago', payment_status = 'approved', updated_at = datetime('now') WHERE id = ?").run(order.id);
+            db.prepare("UPDATE payments SET status = 'approved' WHERE order_id = ?").run(order.id);
+            db.prepare("UPDATE shipments SET status = 'em_separacao', updated_at = datetime('now') WHERE order_id = ?").run(order.id);
+          })();
+          broadcastEvent('order_updated', {orderId: order.id, status: 'pago'});
+          const customer = db
+            .prepare('SELECT email, full_name FROM users WHERE id = ?')
+            .get(order.user_id) as {email: string; full_name: string} | undefined;
+          if (customer) {
+            void sendOrderStatusEmail({
+              to: customer.email,
+              customerName: customer.full_name,
+              orderNumber: order.order_number,
+              status: 'pago',
+            });
+          }
+          res.json({confirmedByGateway: true, message: 'Pagamento aprovado pelo Mercado Pago! Seu pedido entrou em separação.'});
+          return;
+        }
+      }
+    } catch {
+      // Fall through to awaiting verification response
+    }
+  }
+
+  // Otherwise notify store owner to verify receipt and approve in Admin Panel
+  broadcastEvent('order_updated', {orderId: order.id, status: 'aguardando_pagamento', customerNotifiedPayment: true});
+  res.json({
+    confirmedByGateway: false,
+    message: `Aviso de pagamento enviado para a loja! Assim que a equipe Suzy Bely conferir o recebimento do pedido ${order.order_number}, o status será atualizado para Pago.`,
+  });
 });
 
 // ================= ADMIN & STAFF ROUTES =================
@@ -1250,7 +1672,7 @@ app.post('/api/admin/bootstrap', (req: Request, res: Response) => {
     return;
   }
 
-  const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff'];
+  const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff', 'manage_settings'];
   const passwordHash = hashPassword(password);
 
   const info = db
@@ -1293,7 +1715,7 @@ app.post('/api/admin/login', (req: Request, res: Response) => {
       .prepare("SELECT id, email, full_name, permissions_json FROM users WHERE role = 'admin' AND active = 1 LIMIT 1")
       .get() as {id: number; email: string; full_name: string; permissions_json: string} | undefined;
 
-    const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff'];
+    const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff', 'manage_settings'];
     if (!adminUser) {
       const adminEmail = email && isValidEmail(email) ? email : 'admin@suzybely.com.br';
       const info = db
@@ -1724,15 +2146,17 @@ app.get('/api/admin/orders', requireAdminPermission('manage_orders'), (_req: Aut
     .all() as Record<string, unknown>[];
 
   const itemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
+  const payStmt = db.prepare('SELECT id, gateway, method, status, amount_cents, card_last4, card_brand, checkout_url FROM payments WHERE order_id = ?');
   const enriched = orders.map((o) => ({
     ...o,
     shipping_address: JSON.parse(String(o.shipping_address_json || '{}')),
     items: itemsStmt.all(o.id),
+    payment: payStmt.get(o.id),
   }));
   res.json({orders: enriched});
 });
 
-app.patch('/api/admin/orders/:id/status', requireAdminPermission('manage_orders'), (req: AuthedRequest, res: Response) => {
+app.patch('/api/admin/orders/:id/status', requireAdminPermission('manage_orders'), async (req: AuthedRequest, res: Response) => {
   const id = Number(req.params.id);
   const status = String(req.body?.status || '');
   const trackingCode = sanitizeText(req.body?.trackingCode, 60);
@@ -1743,11 +2167,23 @@ app.patch('/api/admin/orders/:id/status', requireAdminPermission('manage_orders'
     return;
   }
 
-  const current = db.prepare('SELECT id, status, order_number FROM orders WHERE id = ?').get(id) as {
-    id: number;
-    status: string;
-    order_number: string;
-  } | undefined;
+  const current = db
+    .prepare(
+      `SELECT o.id, o.status, o.order_number, o.tracking_code, u.email AS customer_email, u.full_name AS customer_name
+       FROM orders o
+       JOIN users u ON u.id = o.user_id
+       WHERE o.id = ?`
+    )
+    .get(id) as
+    | {
+        id: number;
+        status: string;
+        order_number: string;
+        tracking_code: string;
+        customer_email: string;
+        customer_name: string;
+      }
+    | undefined;
   if (!current) {
     res.status(404).json({error: 'Pedido não encontrado.'});
     return;
@@ -1789,7 +2225,20 @@ app.patch('/api/admin/orders/:id/status', requireAdminPermission('manage_orders'
 
   broadcastEvent('catalog_updated', {reason: 'order_status_changed'});
   broadcastEvent('order_updated', {orderId: id, status});
-  res.json({message: 'Status do pedido atualizado.'});
+
+  let emailDispatched = false;
+  if (status !== current.status || (trackingCode && trackingCode !== current.tracking_code)) {
+    const emailRes = await sendOrderStatusEmail({
+      to: current.customer_email,
+      customerName: current.customer_name,
+      orderNumber: current.order_number,
+      status,
+      trackingCode: trackingCode || current.tracking_code,
+    });
+    emailDispatched = emailRes.dispatched;
+  }
+
+  res.json({message: 'Status do pedido atualizado.', emailDispatched});
 });
 
 // Admin Customers (masked CPF for LGPD privacy)
@@ -1967,6 +2416,162 @@ app.patch('/api/admin/staff/:id', requireAdminPermission('manage_staff'), (req: 
   res.json({message: 'Permissões atualizadas.'});
 });
 
+// Admin Store Settings (Payments, PIX, Shipping, Contact & SMTP Emails)
+app.get('/api/admin/settings', requireAdminPermission('manage_settings'), (_req: AuthedRequest, res: Response) => {
+  res.json({
+    settings: serializeAdminSettings(getStoreSettings()),
+    recentEmails: getRecentEmailLogs(12),
+  });
+});
+
+app.put('/api/admin/settings', requireAdminPermission('manage_settings'), (req: AuthedRequest, res: Response) => {
+  const b = req.body || {};
+  const enablePix = b.enablePix !== false ? 1 : 0;
+  const enableCreditCard = b.enableCreditCard !== false ? 1 : 0;
+  const enableBoleto = b.enableBoleto !== false ? 1 : 0;
+
+  if (!enablePix && !enableCreditCard && !enableBoleto) {
+    res.status(400).json({error: 'Mantenha pelo menos uma forma de pagamento ativa para os clientes.'});
+    return;
+  }
+
+  const validKeyTypes = ['cpf', 'cnpj', 'email', 'phone', 'random'] as const;
+  const pixKeyType = validKeyTypes.includes(b.pixKeyType) ? b.pixKeyType : 'cpf';
+  const pixKey = sanitizeText(b.pixKey || '', 140);
+  const pixMerchantName = sanitizeText(b.pixMerchantName || 'SUZY BELY BIJUTERIAS', 40) || 'SUZY BELY BIJUTERIAS';
+  const pixMerchantCity = sanitizeText(b.pixMerchantCity || 'JI-PARANA', 30) || 'JI-PARANA';
+  const pixDiscountPercent = Math.max(0, Math.min(30, Math.round(Number(b.pixDiscountPercent) || 0)));
+  const maxInstallments = Math.max(1, Math.min(12, Math.round(Number(b.maxInstallments) || 1)));
+
+  const rawPaymentLink = typeof b.externalPaymentLink === 'string' ? b.externalPaymentLink.trim() : '';
+  const externalPaymentLink = rawPaymentLink ? isSafeExternalHttpUrl(rawPaymentLink) : '';
+  if (rawPaymentLink && !externalPaymentLink) {
+    res.status(400).json({error: 'O link de pagamento externo deve começar com https:// ou http:// válido.'});
+    return;
+  }
+
+  const freeShippingThresholdCents = Math.max(0, Math.round(Number(b.freeShippingThresholdCents) || 0));
+  const shippingMode = b.shippingMode === 'fixed' ? 'fixed' : 'regional';
+  const fixedPacCents = Math.max(0, Math.round(Number(b.fixedPacCents) || 0));
+  const fixedSedexCents = Math.max(0, Math.round(Number(b.fixedSedexCents) || 0));
+  const shippingExtraDays = Math.max(0, Math.min(30, Math.round(Number(b.shippingExtraDays) || 0)));
+
+  const localDeliveryEnabled = b.localDeliveryEnabled !== false ? 1 : 0;
+  const localDeliveryLabel = sanitizeText(b.localDeliveryLabel || 'Entrega Local / Retirada (Ji-Paraná, RO)', 100);
+  const localDeliveryPriceCents = Math.max(0, Math.round(Number(b.localDeliveryPriceCents) || 0));
+  const localDeliveryDays = Math.max(1, Math.min(30, Math.round(Number(b.localDeliveryDays) || 1)));
+
+  const whatsappNumber = onlyDigits(String(b.whatsappNumber || '')).slice(0, 15);
+  const contactEmail = sanitizeText(b.contactEmail || 'atendimento@suzybely.com.br', 140).toLowerCase();
+  if (contactEmail && !isValidEmail(contactEmail)) {
+    res.status(400).json({error: 'Informe um e-mail de atendimento válido.'});
+    return;
+  }
+  const storeCity = sanitizeText(b.storeCity || 'Ji-Paraná, RO', 80) || 'Ji-Paraná, RO';
+
+  const emailSenderName = sanitizeText(b.emailSenderName || 'Suzy Bely Bijuterias', 80) || 'Suzy Bely Bijuterias';
+  const emailOnRegister = b.emailOnRegister !== false ? 1 : 0;
+  const emailOnOrder = b.emailOnOrder !== false ? 1 : 0;
+  const emailOnStatus = b.emailOnStatus !== false ? 1 : 0;
+  const emailNotifyOwner = b.emailNotifyOwner !== false ? 1 : 0;
+
+  db.prepare(`
+    UPDATE store_settings SET
+      enable_pix = ?,
+      enable_credit_card = ?,
+      enable_boleto = ?,
+      pix_key = ?,
+      pix_key_type = ?,
+      pix_merchant_name = ?,
+      pix_merchant_city = ?,
+      pix_discount_percent = ?,
+      max_installments = ?,
+      external_payment_link = ?,
+      free_shipping_threshold_cents = ?,
+      shipping_mode = ?,
+      fixed_pac_cents = ?,
+      fixed_sedex_cents = ?,
+      shipping_extra_days = ?,
+      local_delivery_enabled = ?,
+      local_delivery_label = ?,
+      local_delivery_price_cents = ?,
+      local_delivery_days = ?,
+      whatsapp_number = ?,
+      contact_email = ?,
+      store_city = ?,
+      email_sender_name = ?,
+      email_on_register = ?,
+      email_on_order = ?,
+      email_on_status = ?,
+      email_notify_owner = ?,
+      updated_at = datetime('now')
+    WHERE id = 1
+  `).run(
+    enablePix,
+    enableCreditCard,
+    enableBoleto,
+    pixKey,
+    pixKeyType,
+    pixMerchantName,
+    pixMerchantCity,
+    pixDiscountPercent,
+    maxInstallments,
+    externalPaymentLink,
+    freeShippingThresholdCents,
+    shippingMode,
+    fixedPacCents,
+    fixedSedexCents,
+    shippingExtraDays,
+    localDeliveryEnabled,
+    localDeliveryLabel,
+    localDeliveryPriceCents,
+    localDeliveryDays,
+    whatsappNumber,
+    contactEmail,
+    storeCity,
+    emailSenderName,
+    emailOnRegister,
+    emailOnOrder,
+    emailOnStatus,
+    emailNotifyOwner
+  );
+
+  logAudit(req.auth!.userId, req.auth!.email, 'UPDATE_STORE_SETTINGS', 'store_settings', 1, 'Configurações de pagamento, frete, contato e e-mail atualizadas.');
+  broadcastEvent('settings_updated', {reason: 'admin_settings_saved'});
+  broadcastEvent('catalog_updated', {reason: 'settings_updated'});
+
+  res.json({
+    message: 'Configurações salvas e aplicadas à loja em tempo real!',
+    settings: serializeAdminSettings(getStoreSettings()),
+    recentEmails: getRecentEmailLogs(12),
+  });
+});
+
+app.post('/api/admin/settings/test-email', requireAdminPermission('manage_settings'), async (req: AuthedRequest, res: Response) => {
+  const recipient = sanitizeText(req.body?.to, 140).toLowerCase();
+  if (!isValidEmail(recipient)) {
+    res.status(400).json({error: 'Informe um endereço de e-mail válido para receber o teste.'});
+    return;
+  }
+
+  const result = await sendTestEmail({to: recipient});
+  const recentEmails = getRecentEmailLogs(12);
+
+  if (result.dispatched) {
+    res.json({
+      ok: true,
+      message: `E-mail de teste enviado com sucesso para ${recipient}!`,
+      recentEmails,
+    });
+    return;
+  }
+
+  res.status(result.status === 'skipped_no_smtp' ? 400 : 502).json({
+    error: result.errorMessage || 'Não foi possível enviar o e-mail de teste.',
+    recentEmails,
+  });
+});
+
 // Vite / Static Frontend Serving
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
@@ -1978,7 +2583,18 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distDir));
+    app.use(
+      express.static(distDir, {
+        setHeaders: (res, filePath) => {
+          if (filePath.endsWith('manifest.webmanifest')) {
+            res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+            res.setHeader('Cache-Control', 'no-cache');
+          } else if (filePath.endsWith('sw.js')) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          }
+        },
+      })
+    );
     app.get('*', (_req: Request, res: Response) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });

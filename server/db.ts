@@ -143,6 +143,7 @@ export function initDatabase(): void {
       boleto_barcode TEXT NOT NULL DEFAULT '',
       card_last4 TEXT NOT NULL DEFAULT '',
       card_brand TEXT NOT NULL DEFAULT '',
+      checkout_url TEXT NOT NULL DEFAULT '',
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
@@ -198,9 +199,142 @@ export function initDatabase(): void {
       product_name TEXT NOT NULL,
       active INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS store_settings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      enable_pix INTEGER NOT NULL DEFAULT 1,
+      enable_credit_card INTEGER NOT NULL DEFAULT 1,
+      enable_boleto INTEGER NOT NULL DEFAULT 1,
+      pix_key TEXT NOT NULL DEFAULT '',
+      pix_key_type TEXT NOT NULL DEFAULT 'cpf' CHECK (pix_key_type IN ('cpf', 'cnpj', 'email', 'phone', 'random')),
+      pix_merchant_name TEXT NOT NULL DEFAULT 'SUZY BELY BIJUTERIAS',
+      pix_merchant_city TEXT NOT NULL DEFAULT 'JI-PARANA',
+      pix_discount_percent INTEGER NOT NULL DEFAULT 5,
+      max_installments INTEGER NOT NULL DEFAULT 3,
+      external_payment_link TEXT NOT NULL DEFAULT '',
+      free_shipping_threshold_cents INTEGER NOT NULL DEFAULT 15000,
+      shipping_mode TEXT NOT NULL DEFAULT 'regional' CHECK (shipping_mode IN ('regional', 'fixed')),
+      fixed_pac_cents INTEGER NOT NULL DEFAULT 1990,
+      fixed_sedex_cents INTEGER NOT NULL DEFAULT 3490,
+      shipping_extra_days INTEGER NOT NULL DEFAULT 0,
+      local_delivery_enabled INTEGER NOT NULL DEFAULT 1,
+      local_delivery_label TEXT NOT NULL DEFAULT 'Entrega Local / Retirada (Ji-Paraná, RO)',
+      local_delivery_price_cents INTEGER NOT NULL DEFAULT 0,
+      local_delivery_days INTEGER NOT NULL DEFAULT 1,
+      whatsapp_number TEXT NOT NULL DEFAULT '',
+      contact_email TEXT NOT NULL DEFAULT 'atendimento@suzybely.com.br',
+      store_city TEXT NOT NULL DEFAULT 'Ji-Paraná, RO',
+      email_sender_name TEXT NOT NULL DEFAULT 'Suzy Bely Bijuterias',
+      email_on_register INTEGER NOT NULL DEFAULT 1,
+      email_on_order INTEGER NOT NULL DEFAULT 1,
+      email_on_status INTEGER NOT NULL DEFAULT 1,
+      email_notify_owner INTEGER NOT NULL DEFAULT 1,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS email_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      recipient_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('sent', 'skipped_no_smtp', 'failed')),
+      error_message TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
+  // Safe migration for existing databases missing payments.checkout_url
+  const paymentCols = db.prepare('PRAGMA table_info(payments)').all() as {name: string}[];
+  if (!paymentCols.some((c) => c.name === 'checkout_url')) {
+    db.exec("ALTER TABLE payments ADD COLUMN checkout_url TEXT NOT NULL DEFAULT ''");
+  }
+
+  // Safe migration for existing databases missing store_settings email columns
+  const settingsCols = db.prepare('PRAGMA table_info(store_settings)').all() as {name: string}[];
+  if (!settingsCols.some((c) => c.name === 'email_sender_name')) {
+    db.exec("ALTER TABLE store_settings ADD COLUMN email_sender_name TEXT NOT NULL DEFAULT 'Suzy Bely Bijuterias'");
+  }
+  if (!settingsCols.some((c) => c.name === 'email_on_register')) {
+    db.exec('ALTER TABLE store_settings ADD COLUMN email_on_register INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!settingsCols.some((c) => c.name === 'email_on_order')) {
+    db.exec('ALTER TABLE store_settings ADD COLUMN email_on_order INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!settingsCols.some((c) => c.name === 'email_on_status')) {
+    db.exec('ALTER TABLE store_settings ADD COLUMN email_on_status INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!settingsCols.some((c) => c.name === 'email_notify_owner')) {
+    db.exec('ALTER TABLE store_settings ADD COLUMN email_notify_owner INTEGER NOT NULL DEFAULT 1');
+  }
+
+  // Ensure default store_settings row exists
+  db.prepare('INSERT OR IGNORE INTO store_settings (id) VALUES (1)').run();
+
   seedInitialCatalog();
+
+  // Ensure initial default banner reflects the updated storefront photo
+  db.prepare(
+    `UPDATE banners SET image_url = ? WHERE image_url = '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg'`
+  ).run('/assets/aistudio/Gemini_Generated_Image_jwylupjwylupjwyl_8ff55566.jpg');
+
+  // Ensure product brand spelling uses Suzy Bely (with Z)
+  db.prepare(
+    `UPDATE products SET name = 'Choker Elos Delicados Suzy Bely', slug = 'choker-elos-delicados-suzy-bely' WHERE slug = 'choker-elos-delicados-susy-bely'`
+  ).run();
+
+  // Ensure initial testimonials reflect Ji-Paraná, RO (city and comment text)
+  const updateTestimonialLocation = db.prepare(
+    `UPDATE testimonials SET author_city = 'Ji-Paraná, RO', comment = ? WHERE author_name = ?`
+  );
+  updateTestimonialLocation.run(
+    'Comprei o Conjunto Pérolas Imperial e a Argola Orgânica. O acabamento é impecável, chegou super bem embalado aqui em Ji-Paraná.',
+    'Camila Ferreira'
+  );
+  updateTestimonialLocation.run(
+    'Uso o Colar Duplo Coração todos os dias há meses e o dourado continua lindo. Preço justo e atendimento super atencioso em Rondônia.',
+    'Mariana Albuquerque'
+  );
+  updateTestimonialLocation.run(
+    'Adorei comprar na Suzy Bely aqui de Ji-Paraná, RO! Calculei o frete pelo CEP e paguei via PIX. As peças surpreendem pela delicadeza e brilho.',
+    'Juliana Costa'
+  );
+}
+
+export interface StoreSettingsRow {
+  id: number;
+  enable_pix: number;
+  enable_credit_card: number;
+  enable_boleto: number;
+  pix_key: string;
+  pix_key_type: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
+  pix_merchant_name: string;
+  pix_merchant_city: string;
+  pix_discount_percent: number;
+  max_installments: number;
+  external_payment_link: string;
+  free_shipping_threshold_cents: number;
+  shipping_mode: 'regional' | 'fixed';
+  fixed_pac_cents: number;
+  fixed_sedex_cents: number;
+  shipping_extra_days: number;
+  local_delivery_enabled: number;
+  local_delivery_label: string;
+  local_delivery_price_cents: number;
+  local_delivery_days: number;
+  whatsapp_number: string;
+  contact_email: string;
+  store_city: string;
+  email_sender_name: string;
+  email_on_register: number;
+  email_on_order: number;
+  email_on_status: number;
+  email_notify_owner: number;
+  updated_at: string;
+}
+
+export function getStoreSettings(): StoreSettingsRow {
+  db.prepare('INSERT OR IGNORE INTO store_settings (id) VALUES (1)').run();
+  return db.prepare('SELECT * FROM store_settings WHERE id = 1').get() as StoreSettingsRow;
 }
 
 function seedInitialCatalog(): void {
@@ -243,7 +377,7 @@ function seedInitialCatalog(): void {
   const imgPulseiras = '/src/assets/images/product_pulseiras_aneis_1795522217768.jpg';
   const imgConjuntos = '/src/assets/images/product_conjuntos_perolas_1795522217179.jpg';
   const imgTornozeleira = '/src/assets/images/product_tornozeleira_acessorio_1795522218708.jpg';
-  const imgHero = '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg';
+  const imgHero = '/assets/aistudio/Gemini_Generated_Image_jwylupjwylupjwyl_8ff55566.jpg';
 
   const productsSeed = [
     {
@@ -437,7 +571,7 @@ function seedInitialCatalog(): void {
   `);
   insertBanner.run(
     'Beleza e elegância em cada detalhe',
-    'Bijuterias selecionadas com banho dourado hipoalergênico, peças exclusivas a partir de R$ 10,00 e entrega rápida para todo o Brasil.',
+    'Bijuterias selecionadas com banho dourado hipoalergênico, peças delicadas e entrega rápida para todo o Brasil.',
     'Explorar Coleção',
     'all',
     imgHero,
@@ -450,23 +584,23 @@ function seedInitialCatalog(): void {
   `);
   insertTestimonial.run(
     'Camila Ferreira',
-    'São Paulo, SP',
+    'Ji-Paraná, RO',
     5,
-    'Comprei o Conjunto Pérolas Imperial e a Argola Orgânica. O acabamento é impecável, chegou muito bem embalado e com entrega rápida.',
+    'Comprei o Conjunto Pérolas Imperial e a Argola Orgânica. O acabamento é impecável, chegou super bem embalado aqui em Ji-Paraná.',
     'Conjunto Pérolas Imperial'
   );
   insertTestimonial.run(
     'Mariana Albuquerque',
-    'Belo Horizonte, MG',
+    'Ji-Paraná, RO',
     5,
-    'Uso o Colar Duplo Coração todos os dias há meses e o dourado continua lindo. Preço justo e atendimento super atencioso.',
+    'Uso o Colar Duplo Coração todos os dias há meses e o dourado continua lindo. Preço justo e atendimento super atencioso em Rondônia.',
     'Colar Duplo Coração & Ponto de Luz'
   );
   insertTestimonial.run(
     'Juliana Costa',
-    'Curitiba, PR',
+    'Ji-Paraná, RO',
     5,
-    'Adorei a facilidade de calcular o frete pelo CEP e pagar via PIX. As peças da promoção de R$ 10,00 surpreendem pela delicadeza.',
+    'Adorei comprar na Suzy Bely aqui de Ji-Paraná, RO! Calculei o frete pelo CEP e paguei via PIX. As peças surpreendem pela delicadeza e brilho.',
     'Tornozeleira Estrelinhas Douradas'
   );
 }

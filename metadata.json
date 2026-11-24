@@ -2,5 +2,7 @@
   "name": "Suzy Bely — Bijuterias & Acessórios",
   "description": "Loja virtual brasileira de bijuterias e acessórios femininos com catálogo elegante, cálculo de frete via CEP, checkout seguro e painel administrativo em tempo real.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -26,19 +26,25 @@ interface ResilientImageProps {
   src: string;
   alt: string;
   className?: string;
+  priority?: boolean;
 }
 
-export function ResilientImage({src, alt, className = 'w-full h-full object-cover'}: ResilientImageProps) {
+export function ResilientImage({
+  src,
+  alt,
+  className = 'w-full h-full object-cover',
+  priority = false,
+}: ResilientImageProps) {
   const [failed, setFailed] = useState(false);
 
   if (failed || !src) {
     return (
       <div
-        className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#F5E6D3] via-[#FDF8F3] to-[#EAD5BC] text-[#8B6F5C] p-4 text-center"
+        className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-[#FFE6D0] via-[#FFF9F4] to-[#F2D2B6] text-[#9A6B50] p-4 text-center"
         role="img"
         aria-label={alt}
       >
-        <Gem className="w-7 h-7 text-[#D94A12]/70 mb-2" />
+        <Gem className="w-7 h-7 text-[#EA580C]/75 mb-2" />
         <span className="text-xs font-medium line-clamp-2">{alt}</span>
       </div>
     );
@@ -48,6 +54,9 @@ export function ResilientImage({src, alt, className = 'w-full h-full object-cove
     <img
       src={src}
       alt={alt}
+      loading={priority ? 'eager' : 'lazy'}
+      decoding="async"
+      fetchPriority={priority ? 'high' : 'auto'}
       referrerPolicy="no-referrer"
       onError={() => setFailed(true)}
       className={className}

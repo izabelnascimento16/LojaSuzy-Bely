@@ -57,7 +57,19 @@ export function isValidPhone(phoneRaw: string): boolean {
   return d.length === 10 || d.length === 11;
 }
 
-export function calculateFreightByCep(cepDigits: string, subtotalCents: number): {
+export interface FreightConfig {
+  freeShippingThresholdCents?: number;
+  shippingMode?: 'regional' | 'fixed';
+  fixedPacCents?: number;
+  fixedSedexCents?: number;
+  shippingExtraDays?: number;
+}
+
+export function calculateFreightByCep(
+  cepDigits: string,
+  subtotalCents: number,
+  config?: FreightConfig
+): {
   pacCents: number;
   pacDays: number;
   sedexCents: number;
@@ -66,7 +78,9 @@ export function calculateFreightByCep(cepDigits: string, subtotalCents: number):
   regionLabel: string;
 } {
   const firstDigit = Number(cepDigits[0] || '0');
-  const freeEligible = subtotalCents >= 15000;
+  const threshold = config?.freeShippingThresholdCents ?? 15000;
+  const freeEligible = threshold > 0 && subtotalCents >= threshold;
+  const extraDays = Math.max(0, config?.shippingExtraDays ?? 0);
 
   let pacCents = 1890;
   let pacDays = 6;
@@ -106,11 +120,16 @@ export function calculateFreightByCep(cepDigits: string, subtotalCents: number):
     sedexDays = 5;
   }
 
+  if (config?.shippingMode === 'fixed') {
+    pacCents = Math.max(0, config.fixedPacCents ?? pacCents);
+    sedexCents = Math.max(0, config.fixedSedexCents ?? sedexCents);
+  }
+
   return {
     pacCents: freeEligible ? 0 : pacCents,
-    pacDays,
+    pacDays: pacDays + extraDays,
     sedexCents,
-    sedexDays,
+    sedexDays: sedexDays + extraDays,
     freeEligible,
     regionLabel,
   };

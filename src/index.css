@@ -5,22 +5,31 @@
   --font-sans: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --color-cream: #FDF8F3;
-  --color-ivory: #FFFDF9;
-  --color-sand: #F5E6D3;
-  --color-nude: #EAD5BC;
-  --color-terracotta: #D94A12;
-  --color-terracotta-hover: #B83C0B;
-  --color-gold: #C49A45;
-  --color-espresso: #2D1B12;
-  --color-cocoa: #664938;
-  --color-muted: #8B6F5C;
+  --color-cream: #FFF9F4;
+  --color-ivory: #FFFFFF;
+  --color-peach: #FFF2E6;
+  --color-sand: #FFE6D0;
+  --color-beige: #F2D2B6;
+  --color-orange-primary: #EA580C;
+  --color-orange-hover: #C94506;
+  --color-gold: #D4A548;
+  --color-espresso: #3D2113;
+  --color-cocoa: #7A4D35;
+  --color-muted: #9A6B50;
 }
 
 @layer base {
   html {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
+    overflow-x: clip;
+    max-width: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    overflow-x: clip;
+    max-width: 100%;
   }
 
   h1, h2, h3, .font-display {
@@ -30,6 +39,30 @@
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Responsive mobile & tablet ergonomics */
+@media (max-width: 639px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+@media (min-width: 640px) and (max-width: 1023px) {
+  .tablet-container-pad {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

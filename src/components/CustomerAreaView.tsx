@@ -166,17 +166,17 @@ export function CustomerAreaView({
 
   return (
     <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-[#EAD5BC]">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-[#F2D2B6]">
         <div>
-          <h1 className="font-display text-3xl font-semibold text-[#2D1B12]">Olá, {user.fullName}</h1>
-          <p className="text-sm text-[#664938] mt-1">
+          <h1 className="font-display text-3xl font-semibold text-[#3D2113]">Olá, {user.fullName}</h1>
+          <p className="text-sm text-[#7A4D35] mt-1">
             {user.email} · CPF {user.cpfMasked || '***.***.***-**'}
           </p>
         </div>
         <button
           type="button"
           onClick={onLogout}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#EAD5BC] bg-white text-sm font-medium text-[#2D1B12] hover:bg-[#F5E6D3] w-fit cursor-pointer"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#F2D2B6] bg-white text-sm font-medium text-[#3D2113] hover:bg-[#FFE8D4] w-fit cursor-pointer"
         >
           <LogOut className="w-4 h-4" />
           <span>Sair da Conta</span>
@@ -184,7 +184,7 @@ export function CustomerAreaView({
       </div>
 
       {/* Navigation Tabs */}
-      <div className="flex flex-wrap gap-2 p-1.5 bg-[#F5E6D3]/60 rounded-xl w-fit">
+      <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap gap-1.5 sm:gap-2 p-1.5 bg-[#FFE8D4]/60 rounded-xl max-w-full w-full sm:w-fit">
         {[
           {id: 'orders' as const, label: 'Meus Pedidos', icon: Package},
           {id: 'profile' as const, label: 'Dados Pessoais', icon: UserIcon},
@@ -196,11 +196,11 @@ export function CustomerAreaView({
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer ${
-                activeTab === tab.id ? 'bg-white text-[#2D1B12] shadow-xs' : 'text-[#664938] hover:text-[#2D1B12]'
+              className={`inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-medium whitespace-nowrap shrink-0 min-h-[42px] transition-colors cursor-pointer ${
+                activeTab === tab.id ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
               }`}
             >
-              <Icon className="w-4 h-4 text-[#D94A12]" />
+              <Icon className="w-4 h-4 text-[#EA580C]" />
               <span>{tab.label}</span>
             </button>
           );
@@ -208,7 +208,7 @@ export function CustomerAreaView({
       </div>
 
       {error && (
-        <div className="p-4 rounded-xl bg-[#D94A12]/10 border border-[#D94A12]/30 text-sm text-[#B83C0B] flex items-center gap-2">
+        <div className="p-4 rounded-xl bg-[#EA580C]/10 border border-[#EA580C]/30 text-sm text-[#C94506] flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
@@ -224,31 +224,31 @@ export function CustomerAreaView({
       {activeTab === 'orders' && (
         <div className="space-y-4">
           {loadingOrders ? (
-            <p className="text-sm text-[#664938]">Carregando histórico de compras...</p>
+            <p className="text-sm text-[#7A4D35]">Carregando histórico de compras...</p>
           ) : orders.length === 0 ? (
-            <div className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-8 text-center">
-              <Package className="w-10 h-10 text-[#C49A45] mx-auto mb-2" />
-              <p className="font-display text-lg text-[#2D1B12]">Nenhum pedido realizado ainda</p>
-              <p className="text-sm text-[#664938] mt-1">
+            <div className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-8 text-center">
+              <Package className="w-10 h-10 text-[#D4A548] mx-auto mb-2" />
+              <p className="font-display text-lg text-[#3D2113]">Nenhum pedido realizado ainda</p>
+              <p className="text-sm text-[#7A4D35] mt-1">
                 Quando você concluir uma compra, o acompanhamento completo aparecerá aqui.
               </p>
             </div>
           ) : (
             orders.map((order) => (
-              <div key={order.id} className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-5 sm:p-6 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#F5E6D3]">
+              <div key={order.id} className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-5 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#FFE8D4]">
                   <div>
-                    <div className="font-mono text-sm font-bold text-[#2D1B12]">{order.order_number}</div>
-                    <div className="text-xs text-[#8B6F5C]">
+                    <div className="font-mono text-sm font-bold text-[#3D2113]">{order.order_number}</div>
+                    <div className="text-xs text-[#9A6B50]">
                       Realizado em {new Date(order.created_at).toLocaleDateString('pt-BR')} ·{' '}
                       {PAYMENT_METHOD_LABELS[order.payment_method]}
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-sm font-semibold text-[#D94A12]">
+                    <div className="text-sm font-semibold text-[#EA580C]">
                       {ORDER_STATUS_LABELS[order.status] || order.status}
                     </div>
-                    <div className="text-base font-bold text-[#2D1B12] tabular-nums">
+                    <div className="text-base font-bold text-[#3D2113] tabular-nums">
                       {formatBRL(order.total_cents)}
                     </div>
                   </div>
@@ -256,7 +256,7 @@ export function CustomerAreaView({
 
                 <div className="space-y-1.5 text-sm">
                   {order.items.map((item) => (
-                    <div key={item.id} className="flex justify-between text-[#5D4030]">
+                    <div key={item.id} className="flex justify-between text-[#5E3824]">
                       <span>
                         {item.quantity}x {item.product_name}
                       </span>
@@ -265,11 +265,37 @@ export function CustomerAreaView({
                   ))}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#F5E6D3] text-xs text-[#664938]">
+                {order.status === 'aguardando_pagamento' && (order.payment?.checkout_url || order.payment?.pix_copy_paste) && (
+                  <div className="p-3.5 rounded-xl bg-[#FFF9F4] border border-[#F2D2B6] space-y-2 text-xs">
+                    {order.payment?.checkout_url && (
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="font-medium text-[#3D2113]">Pagamento pendente:</span>
+                        <a
+                          href={order.payment.checkout_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3.5 py-2 rounded-lg bg-[#EA580C] text-white font-semibold hover:bg-[#C94506]"
+                        >
+                          Concluir Pagamento
+                        </a>
+                      </div>
+                    )}
+                    {order.payment?.pix_copy_paste && (
+                      <div>
+                        <span className="font-semibold text-[#3D2113]">PIX Copia e Cola:</span>
+                        <div className="mt-1 p-2 rounded bg-white border border-[#F2D2B6] font-mono text-[11px] break-all text-[#5E3824]">
+                          {order.payment.pix_copy_paste}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-[#FFE8D4] text-xs text-[#7A4D35]">
                   <div>
                     <span>Entrega: {order.shipping_method}</span>
                     {order.tracking_code && (
-                      <span className="ml-3 font-mono font-semibold text-[#2D1B12]">
+                      <span className="ml-3 font-mono font-semibold text-[#3D2113]">
                         Rastreio: {order.tracking_code}
                       </span>
                     )}
@@ -278,7 +304,7 @@ export function CustomerAreaView({
                     <button
                       type="button"
                       onClick={() => handleCancelOrder(order.id)}
-                      className="px-3 py-1.5 rounded-lg border border-[#D94A12]/40 text-[#D94A12] font-semibold hover:bg-[#D94A12]/10 cursor-pointer"
+                      className="px-3.5 py-2 rounded-lg border border-[#EA580C]/40 text-[#EA580C] font-semibold hover:bg-[#EA580C]/10 min-h-[42px] cursor-pointer"
                     >
                       Solicitar Cancelamento
                     </button>
@@ -295,76 +321,76 @@ export function CustomerAreaView({
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           <form
             onSubmit={handleSaveProfile}
-            className="lg:col-span-7 bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-6 space-y-4"
+            className="lg:col-span-7 bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-6 space-y-4"
           >
-            <h2 className="font-display text-xl font-semibold text-[#2D1B12]">Alterar Dados Pessoais</h2>
+            <h2 className="font-display text-xl font-semibold text-[#3D2113]">Alterar Dados Pessoais</h2>
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Nome completo</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Nome completo</label>
               <input
                 type="text"
                 required
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-[#2D1B12] mb-1">Celular com DDD</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Celular com DDD</label>
               <input
                 type="tel"
                 required
                 value={phone}
                 onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-                className="w-full bg-white border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm font-mono"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm font-mono"
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-[#8B6F5C] mb-1">CPF (protegido pela LGPD)</label>
+              <label className="block text-xs font-semibold text-[#9A6B50] mb-1">CPF (protegido pela LGPD)</label>
               <input
                 type="text"
                 disabled
                 value={user.cpfMasked || '***.***.***-**'}
-                className="w-full bg-[#FDF8F3] border border-[#EAD5BC] rounded-lg px-3.5 py-2.5 text-sm font-mono text-[#8B6F5C]"
+                className="w-full bg-[#FFF9F4] border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm font-mono text-[#9A6B50]"
               />
             </div>
             <button
               type="submit"
-              className="px-6 py-2.5 rounded-lg bg-[#D94A12] text-white text-sm font-semibold hover:bg-[#B83C0B] cursor-pointer"
+              className="px-6 py-2.5 rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] cursor-pointer"
             >
               Salvar Alterações
             </button>
           </form>
 
-          <div className="lg:col-span-5 bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-6 space-y-4 h-fit">
-            <h2 className="font-display text-xl font-semibold text-[#2D1B12]">Privacidade e Encerramento</h2>
-            <p className="text-sm text-[#5D4030] leading-relaxed">
+          <div className="lg:col-span-5 bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-6 space-y-4 h-fit">
+            <h2 className="font-display text-xl font-semibold text-[#3D2113]">Privacidade e Encerramento</h2>
+            <p className="text-sm text-[#5E3824] leading-relaxed">
               Conforme a LGPD, você pode encerrar sua conta a qualquer momento. Seus dados pessoais serão removidos ou anonimizados com segurança.
             </p>
             {!confirmDeleteOpen ? (
               <button
                 type="button"
                 onClick={() => setConfirmDeleteOpen(true)}
-                className="px-4 py-2 rounded-lg border border-[#D94A12]/50 text-[#D94A12] text-xs font-semibold hover:bg-[#D94A12]/10 cursor-pointer"
+                className="px-4 py-2 rounded-lg border border-[#EA580C]/50 text-[#EA580C] text-xs font-semibold hover:bg-[#EA580C]/10 cursor-pointer"
               >
                 Encerrar Minha Conta
               </button>
             ) : (
-              <div className="p-4 rounded-xl bg-[#FDF8F3] border border-[#D94A12]/40 space-y-3">
-                <p className="text-xs font-semibold text-[#2D1B12]">
+              <div className="p-4 rounded-xl bg-[#FFF9F4] border border-[#EA580C]/40 space-y-3">
+                <p className="text-xs font-semibold text-[#3D2113]">
                   Confirma o encerramento definitivo da sua conta? Esta ação não pode ser desfeita.
                 </p>
                 <div className="flex gap-2">
                   <button
                     type="button"
                     onClick={handleCloseAccount}
-                    className="px-4 py-2 rounded-lg bg-[#D94A12] text-white text-xs font-semibold cursor-pointer"
+                    className="px-4 py-2 rounded-lg bg-[#EA580C] text-white text-xs font-semibold cursor-pointer"
                   >
                     Sim, encerrar conta
                   </button>
                   <button
                     type="button"
                     onClick={() => setConfirmDeleteOpen(false)}
-                    className="px-4 py-2 rounded-lg border border-[#EAD5BC] bg-white text-xs font-semibold cursor-pointer"
+                    className="px-4 py-2 rounded-lg border border-[#F2D2B6] bg-white text-xs font-semibold cursor-pointer"
                   >
                     Cancelar
                   </button>
@@ -379,11 +405,11 @@ export function CustomerAreaView({
       {activeTab === 'addresses' && (
         <div className="space-y-5">
           <div className="flex items-center justify-between">
-            <h2 className="font-display text-xl font-semibold text-[#2D1B12]">Meus Endereços</h2>
+            <h2 className="font-display text-xl font-semibold text-[#3D2113]">Meus Endereços</h2>
             <button
               type="button"
               onClick={() => setShowNewAddr((p) => !p)}
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#D94A12] text-white text-xs font-semibold hover:bg-[#B83C0B] cursor-pointer"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-[#EA580C] text-white text-xs font-semibold hover:bg-[#C94506] cursor-pointer"
             >
               <Plus className="w-4 h-4" />
               <span>Novo Endereço</span>
@@ -393,7 +419,7 @@ export function CustomerAreaView({
           {showNewAddr && (
             <form
               onSubmit={handleAddAddress}
-              className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-2xl p-6 grid grid-cols-1 sm:grid-cols-6 gap-3"
+              className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-6 grid grid-cols-1 sm:grid-cols-6 gap-3"
             >
               <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold mb-1">Identificação</label>
@@ -402,7 +428,7 @@ export function CustomerAreaView({
                   required
                   value={label}
                   onChange={(e) => setLabel(e.target.value)}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm"
                 />
               </div>
               <div className="sm:col-span-2">
@@ -417,7 +443,7 @@ export function CustomerAreaView({
                     setCep(f);
                     if (onlyDigits(f).length === 8) handleLookupCep(f);
                   }}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm font-mono"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono"
                 />
               </div>
               <div className="sm:col-span-2">
@@ -428,7 +454,7 @@ export function CustomerAreaView({
                   maxLength={2}
                   value={state}
                   onChange={(e) => setState(e.target.value.toUpperCase())}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm uppercase"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm uppercase"
                 />
               </div>
               <div className="sm:col-span-4">
@@ -438,7 +464,7 @@ export function CustomerAreaView({
                   required
                   value={street}
                   onChange={(e) => setStreet(e.target.value)}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm"
                 />
               </div>
               <div className="sm:col-span-2">
@@ -448,7 +474,7 @@ export function CustomerAreaView({
                   required
                   value={number}
                   onChange={(e) => setNumber(e.target.value)}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm"
                 />
               </div>
               <div className="sm:col-span-3">
@@ -458,7 +484,7 @@ export function CustomerAreaView({
                   required
                   value={neighborhood}
                   onChange={(e) => setNeighborhood(e.target.value)}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm"
                 />
               </div>
               <div className="sm:col-span-3">
@@ -468,20 +494,20 @@ export function CustomerAreaView({
                   required
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
-                  className="w-full border border-[#EAD5BC] rounded-lg px-3 py-2 text-sm"
+                  className="w-full border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm"
                 />
               </div>
               <div className="sm:col-span-6 flex justify-end gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowNewAddr(false)}
-                  className="px-4 py-2 rounded-lg border border-[#EAD5BC] text-xs font-semibold cursor-pointer"
+                  className="px-4 py-2 rounded-lg border border-[#F2D2B6] text-xs font-semibold cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-lg bg-[#D94A12] text-white text-xs font-semibold cursor-pointer"
+                  className="px-5 py-2 rounded-lg bg-[#EA580C] text-white text-xs font-semibold cursor-pointer"
                 >
                   Salvar Endereço
                 </button>
@@ -493,14 +519,14 @@ export function CustomerAreaView({
             {addresses.map((addr) => (
               <div
                 key={addr.id}
-                className="bg-[#FFFDF9] border border-[#EAD5BC] rounded-xl p-5 flex items-start justify-between gap-4"
+                className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-xl p-5 flex items-start justify-between gap-4"
               >
                 <div className="space-y-1 text-sm">
-                  <div className="font-semibold text-[#2D1B12]">{addr.label}</div>
-                  <p className="text-[#5D4030]">
+                  <div className="font-semibold text-[#3D2113]">{addr.label}</div>
+                  <p className="text-[#5E3824]">
                     {addr.street}, {addr.number} {addr.complement ? `- ${addr.complement}` : ''}
                   </p>
-                  <p className="text-[#664938] text-xs">
+                  <p className="text-[#7A4D35] text-xs">
                     {addr.neighborhood} · {addr.city}/{addr.state} · CEP {addr.cep}
                   </p>
                 </div>
@@ -508,7 +534,7 @@ export function CustomerAreaView({
                   type="button"
                   onClick={() => handleDeleteAddress(addr.id)}
                   aria-label="Excluir endereço"
-                  className="p-2 text-[#8B6F5C] hover:text-[#D94A12] cursor-pointer"
+                  className="p-2 text-[#9A6B50] hover:text-[#EA580C] cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                 </button>

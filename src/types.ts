@@ -92,12 +92,82 @@ export interface User {
 }
 
 export interface ShippingOption {
-  id: 'pac' | 'sedex';
+  id: 'pac' | 'sedex' | 'local';
   name: string;
   carrier: string;
   service: string;
   priceCents: number;
   estimatedDays: number;
+}
+
+export interface PublicStoreSettings {
+  enablePix: boolean;
+  enableCreditCard: boolean;
+  enableBoleto: boolean;
+  pixDiscountPercent: number;
+  maxInstallments: number;
+  hasRealPixKey: boolean;
+  hasExternalPaymentLink: boolean;
+  mercadoPagoConfigured: boolean;
+  freeShippingThresholdCents: number;
+  localDeliveryEnabled: boolean;
+  localDeliveryLabel: string;
+  localDeliveryPriceCents: number;
+  localDeliveryDays: number;
+  whatsappNumber: string;
+  contactEmail: string;
+  storeCity: string;
+}
+
+export interface EmailLog {
+  id: number;
+  recipient_email: string;
+  subject: string;
+  event_type: string;
+  status: 'sent' | 'skipped_no_smtp' | 'failed';
+  error_message: string;
+  created_at: string;
+}
+
+export interface AdminStoreSettings {
+  enablePix: boolean;
+  enableCreditCard: boolean;
+  enableBoleto: boolean;
+  pixKey: string;
+  pixKeyType: 'cpf' | 'cnpj' | 'email' | 'phone' | 'random';
+  pixMerchantName: string;
+  pixMerchantCity: string;
+  pixDiscountPercent: number;
+  maxInstallments: number;
+  externalPaymentLink: string;
+  freeShippingThresholdCents: number;
+  shippingMode: 'regional' | 'fixed';
+  fixedPacCents: number;
+  fixedSedexCents: number;
+  shippingExtraDays: number;
+  localDeliveryEnabled: boolean;
+  localDeliveryLabel: string;
+  localDeliveryPriceCents: number;
+  localDeliveryDays: number;
+  whatsappNumber: string;
+  contactEmail: string;
+  storeCity: string;
+  emailSenderName: string;
+  emailOnRegister: boolean;
+  emailOnOrder: boolean;
+  emailOnStatus: boolean;
+  emailNotifyOwner: boolean;
+  gatewayStatus?: {
+    mercadoPagoConfigured: boolean;
+    appUrlConfigured: boolean;
+  };
+  emailStatus?: {
+    configured: boolean;
+    hostConfigured: boolean;
+    userConfigured: boolean;
+    fromAddress: string;
+    port: number;
+  };
 }
 
 export interface OrderItem {
@@ -147,6 +217,7 @@ export interface Order {
     boleto_barcode: string;
     card_last4: string;
     card_brand: string;
+    checkout_url?: string;
   };
   shipment?: {
     carrier: string;
