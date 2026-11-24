@@ -1,0 +1,1992 @@
+import 'dotenv/config';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import express from 'express';
+import type {Request, Response, NextFunction} from 'express';
+import {createServer as createViteServer} from 'vite';
+import {db, initDatabase} from './server/db.ts';
+import {
+  csrfProtection,
+  hashPassword,
+  hashResetToken,
+  isSafeImageUrl,
+  maskCpf,
+  sanitizeText,
+  signSessionToken,
+  verifyPassword,
+  verifySessionToken,
+  type SessionPayload,
+} from './server/security.ts';
+import {
+  BRAZILIAN_UFS,
+  calculateFreightByCep,
+  formatCep,
+  formatCpf,
+  isValidCep,
+  isValidCpf,
+  isValidEmail,
+  isValidPhone,
+  onlyDigits,
+} from './server/validators.ts';
+
+initDatabase();
+
+const app = express();
+const PORT = 3000;
+
+app.set('trust proxy', 1);
+app.use(express.json({limit: '2mb'}));
+
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+// Real-time Server-Sent Events (SSE) clients
+const sseClients = new Set<Response>();
+
+function broadcastEvent(event: string, data: Record<string, unknown>): void {
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try {
+      client.write(payload);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
+}
+
+interface AuthedRequest extends Request {
+  auth?: SessionPayload;
+}
+
+function attachAuth(req: AuthedRequest, _res: Response, next: NextFunction): void {
+  const header = req.headers.authorization;
+  if (header?.startsWith('Bearer ')) {
+    const token = header.slice(7).trim();
+    const payload = verifySessionToken(token);
+    if (payload) {
+      req.auth = payload;
+    }
+  }
+  next();
+}
+
+function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
+  if (!req.auth) {
+    res.status(401).json({error: 'Autenticação necessária para continuar.'});
+    return;
+  }
+  const userRow = db
+    .prepare('SELECT id, active, role FROM users WHERE id = ?')
+    .get(req.auth.userId) as {id: number; active: number; role: string} | undefined;
+  if (!userRow || !userRow.active) {
+    res.status(401).json({error: 'Sessão inválida ou conta desativada.'});
+    return;
+  }
+  next();
+}
+
+function requireAdminPermission(permission?: string) {
+  return (req: AuthedRequest, res: Response, next: NextFunction): void => {
+    if (!req.auth) {
+      res.status(401).json({error: 'Acesso restrito. Faça login administrativo.'});
+      return;
+    }
+    if (req.auth.role !== 'admin' && req.auth.role !== 'staff') {
+      res.status(403).json({error: 'Permissão insuficiente para acessar o painel.'});
+      return;
+    }
+    if (req.auth.role === 'staff' && permission && !req.auth.permissions.includes(permission)) {
+      res.status(403).json({error: 'Seu perfil de colaborador não possui esta permissão.'});
+      return;
+    }
+    next();
+  };
+}
+
+function logAudit(
+  actorUserId: number | null,
+  actorEmail: string,
+  action: string,
+  entityType: string,
+  entityId: string | number,
+  details: string
+): void {
+  db.prepare(
+    'INSERT INTO audit_logs (actor_user_id, actor_email, action, entity_type, entity_id, details) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(actorUserId, actorEmail, action, entityType, String(entityId), details);
+}
+
+function slugify(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+}
+
+function enrichProducts(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  if (rows.length === 0) return [];
+  const imgStmt = db.prepare(
+    'SELECT id, url, alt, sort_order FROM product_images WHERE product_id = ? ORDER BY sort_order ASC, id ASC'
+  );
+  return rows.map((row) => {
+    const images = imgStmt.all(row.id) as {id: number; url: string; alt: string; sort_order: number}[];
+    return {
+      ...row,
+      is_featured: Boolean(row.is_featured),
+      is_new: Boolean(row.is_new),
+      is_bestseller: Boolean(row.is_bestseller),
+      active: Boolean(row.active),
+      images,
+    };
+  });
+}
+
+// SSE stream
+app.get('/api/events', (req: Request, res: Response) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+  res.write('event: connected\ndata: {"ok":true}\n\n');
+  sseClients.add(res);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': heartbeat\n\n');
+    } catch {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    }
+  }, 25000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  });
+});
+
+app.use('/api', attachAuth);
+app.use('/api', csrfProtection);
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  res.json({status: 'ok', store: 'Suzy Bely Bijuterias & Acessórios'});
+});
+
+// Public Storefront Catalog
+app.get('/api/catalog', (_req: Request, res: Response) => {
+  const categories = db
+    .prepare('SELECT id, name, slug, description, sort_order FROM categories ORDER BY sort_order ASC, id ASC')
+    .all();
+
+  const rawProducts = db
+    .prepare(`
+      SELECT p.*, c.name AS category_name, c.slug AS category_slug
+      FROM products p
+      JOIN categories c ON c.id = p.category_id
+      WHERE p.active = 1
+      ORDER BY p.is_featured DESC, p.id DESC
+    `)
+    .all() as Record<string, unknown>[];
+
+  const banners = db
+    .prepare('SELECT id, title, subtitle, cta_text, cta_category, image_url, active, sort_order FROM banners WHERE active = 1 ORDER BY sort_order ASC, id ASC')
+    .all();
+
+  const testimonials = db
+    .prepare('SELECT id, author_name, author_city, rating, comment, product_name FROM testimonials WHERE active = 1 ORDER BY id ASC')
+    .all();
+
+  res.json({
+    categories,
+    products: enrichProducts(rawProducts),
+    banners,
+    testimonials,
+  });
+});
+
+app.get('/api/products', (req: Request, res: Response) => {
+  const category = sanitizeText(req.query.category, 60);
+  const search = sanitizeText(req.query.search, 100);
+  const inStock = req.query.inStock === 'true';
+  const onlyNew = req.query.isNew === 'true';
+  const onlyPromo = req.query.isPromo === 'true';
+  const minPrice = Number(req.query.minPrice) || 0;
+  const maxPrice = Number(req.query.maxPrice) || 0;
+  const sort = sanitizeText(req.query.sort, 30);
+
+  const where: string[] = ['p.active = 1'];
+  const params: unknown[] = [];
+
+  if (category && category !== 'all') {
+    if (category === 'promocoes') {
+      where.push('p.promo_price_cents IS NOT NULL AND p.promo_price_cents < p.price_cents');
+    } else if (category === 'lancamentos') {
+      where.push('p.is_new = 1');
+    } else {
+      where.push('c.slug = ?');
+      params.push(category);
+    }
+  }
+
+  if (search) {
+    where.push('(LOWER(p.name) LIKE ? OR LOWER(p.description) LIKE ? OR LOWER(p.material) LIKE ? OR LOWER(c.name) LIKE ?)');
+    const like = `%${search.toLowerCase()}%`;
+    params.push(like, like, like, like);
+  }
+
+  if (inStock) {
+    where.push('p.stock > 0');
+  }
+  if (onlyNew) {
+    where.push('p.is_new = 1');
+  }
+  if (onlyPromo) {
+    where.push('p.promo_price_cents IS NOT NULL AND p.promo_price_cents < p.price_cents');
+  }
+  if (minPrice > 0) {
+    where.push('COALESCE(p.promo_price_cents, p.price_cents) >= ?');
+    params.push(Math.round(minPrice * 100));
+  }
+  if (maxPrice > 0) {
+    where.push('COALESCE(p.promo_price_cents, p.price_cents) <= ?');
+    params.push(Math.round(maxPrice * 100));
+  }
+
+  let orderBy = 'p.is_featured DESC, p.id DESC';
+  if (sort === 'price_asc') orderBy = 'COALESCE(p.promo_price_cents, p.price_cents) ASC';
+  else if (sort === 'price_desc') orderBy = 'COALESCE(p.promo_price_cents, p.price_cents) DESC';
+  else if (sort === 'bestseller') orderBy = 'p.is_bestseller DESC, p.sales_count DESC';
+  else if (sort === 'newest') orderBy = 'p.is_new DESC, p.id DESC';
+
+  const sql = `
+    SELECT p.*, c.name AS category_name, c.slug AS category_slug
+    FROM products p
+    JOIN categories c ON c.id = p.category_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY ${orderBy}
+  `;
+
+  const rows = db.prepare(sql).all(...params) as Record<string, unknown>[];
+  res.json({products: enrichProducts(rows)});
+});
+
+app.get('/api/products/:idOrSlug', (req: Request, res: Response) => {
+  const param = sanitizeText(req.params.idOrSlug, 100);
+  const isNumeric = /^\d+$/.test(param);
+  const row = db
+    .prepare(`
+      SELECT p.*, c.name AS category_name, c.slug AS category_slug
+      FROM products p
+      JOIN categories c ON c.id = p.category_id
+      WHERE p.active = 1 AND ${isNumeric ? 'p.id = ?' : 'p.slug = ?'}
+    `)
+    .get(isNumeric ? Number(param) : param) as Record<string, unknown> | undefined;
+
+  if (!row) {
+    res.status(404).json({error: 'Produto não encontrado.'});
+    return;
+  }
+
+  const relatedRows = db
+    .prepare(`
+      SELECT p.*, c.name AS category_name, c.slug AS category_slug
+      FROM products p
+      JOIN categories c ON c.id = p.category_id
+      WHERE p.active = 1 AND p.id != ? AND p.category_id = ?
+      ORDER BY p.is_featured DESC, p.id DESC
+      LIMIT 4
+    `)
+    .all(row.id, row.category_id) as Record<string, unknown>[];
+
+  res.json({
+    product: enrichProducts([row])[0],
+    related: enrichProducts(relatedRows),
+  });
+});
+
+// ViaCEP Proxy (fixed host https://viacep.com.br, strict 8-digit validation)
+app.get('/api/cep/:cep', async (req: Request, res: Response) => {
+  const digits = onlyDigits(String(req.params.cep || ''));
+  if (!isValidCep(digits)) {
+    res.status(400).json({error: 'CEP inválido. Informe os 8 dígitos no formato 00000-000.'});
+    return;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4500);
+    const response = await fetch(`https://viacep.com.br/ws/${digits}/json/`, {
+      signal: controller.signal,
+      headers: {Accept: 'application/json'},
+    });
+    clearTimeout(timeout);
+
+    if (response.ok) {
+      const data = (await response.json()) as {
+        erro?: boolean;
+        cep?: string;
+        logradouro?: string;
+        complemento?: string;
+        bairro?: string;
+        localidade?: string;
+        uf?: string;
+      };
+      if (data.erro) {
+        res.status(404).json({error: 'CEP não encontrado na base dos Correios.'});
+        return;
+      }
+      res.json({
+        cep: formatCep(digits),
+        street: sanitizeText(data.logradouro || '', 150),
+        complement: sanitizeText(data.complemento || '', 100),
+        neighborhood: sanitizeText(data.bairro || '', 100),
+        city: sanitizeText(data.localidade || '', 100),
+        state: sanitizeText(data.uf || '', 2).toUpperCase(),
+      });
+      return;
+    }
+  } catch {
+    // Graceful fallback if offline in isolated sandbox
+  }
+
+  res.json({
+    cep: formatCep(digits),
+    street: '',
+    complement: '',
+    neighborhood: '',
+    city: '',
+    state: '',
+    manualFallback: true,
+  });
+});
+
+app.post('/api/shipping/calculate', (req: Request, res: Response) => {
+  const cepDigits = onlyDigits(String(req.body?.cep || ''));
+  const subtotalCents = Math.max(0, Math.round(Number(req.body?.subtotalCents) || 0));
+
+  if (!isValidCep(cepDigits)) {
+    res.status(400).json({error: 'Informe um CEP válido com 8 dígitos.'});
+    return;
+  }
+
+  const freight = calculateFreightByCep(cepDigits, subtotalCents);
+  res.json({
+    cep: formatCep(cepDigits),
+    regionLabel: freight.regionLabel,
+    freeEligible: freight.freeEligible,
+    options: [
+      {
+        id: 'pac',
+        name: freight.freeEligible ? 'Frete Grátis (PAC)' : 'Correios PAC',
+        carrier: 'Correios',
+        service: 'PAC',
+        priceCents: freight.pacCents,
+        estimatedDays: freight.pacDays,
+      },
+      {
+        id: 'sedex',
+        name: 'Correios SEDEX Expresso',
+        carrier: 'Correios',
+        service: 'SEDEX',
+        priceCents: freight.sedexCents,
+        estimatedDays: freight.sedexDays,
+      },
+    ],
+  });
+});
+
+// Cart Persistence
+app.post('/api/cart/sync', (req: AuthedRequest, res: Response) => {
+  const sessionKey = sanitizeText(req.body?.sessionKey, 80);
+  const items = Array.isArray(req.body?.items) ? req.body.items : [];
+  if (!sessionKey) {
+    res.status(400).json({error: 'Identificador de carrinho ausente.'});
+    return;
+  }
+
+  const tx = db.transaction(() => {
+    let cart = db.prepare('SELECT id FROM carts WHERE session_key = ?').get(sessionKey) as {id: number} | undefined;
+    if (!cart) {
+      const info = db
+        .prepare('INSERT INTO carts (session_key, user_id) VALUES (?, ?)')
+        .run(sessionKey, req.auth?.userId ?? null);
+      cart = {id: Number(info.lastInsertRowid)};
+    } else if (req.auth?.userId) {
+      db.prepare("UPDATE carts SET user_id = ?, updated_at = datetime('now') WHERE id = ?").run(
+        req.auth.userId,
+        cart.id
+      );
+    }
+
+    db.prepare('DELETE FROM cart_items WHERE cart_id = ?').run(cart.id);
+    const insertItem = db.prepare(
+      'INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?)'
+    );
+
+    for (const item of items) {
+      const productId = Number(item?.productId);
+      const quantity = Math.max(1, Math.min(99, Math.round(Number(item?.quantity) || 1)));
+      if (!Number.isInteger(productId) || productId <= 0) continue;
+      const exists = db.prepare('SELECT id FROM products WHERE id = ? AND active = 1').get(productId);
+      if (exists) {
+        insertItem.run(cart.id, productId, quantity);
+      }
+    }
+  });
+
+  tx();
+  res.json({ok: true});
+});
+
+// Customer Auth Routes
+app.post('/api/auth/register', (req: Request, res: Response) => {
+  const body = req.body || {};
+  const fullName = sanitizeText(body.fullName, 120);
+  const cpfDigits = onlyDigits(String(body.cpf || ''));
+  const email = sanitizeText(body.email, 140).toLowerCase();
+  const phoneDigits = onlyDigits(String(body.phone || ''));
+  const password = String(body.password || '');
+  const confirmPassword = String(body.confirmPassword || '');
+  const lgpdConsent = Boolean(body.lgpdConsent);
+
+  const cepDigits = onlyDigits(String(body.cep || ''));
+  const street = sanitizeText(body.street, 150);
+  const number = sanitizeText(body.number, 20);
+  const complement = sanitizeText(body.complement, 100);
+  const neighborhood = sanitizeText(body.neighborhood, 100);
+  const city = sanitizeText(body.city, 100);
+  const state = sanitizeText(body.state, 2).toUpperCase();
+
+  if (fullName.length < 3) {
+    res.status(400).json({error: 'Informe seu nome completo.'});
+    return;
+  }
+  if (!isValidCpf(cpfDigits)) {
+    res.status(400).json({error: 'CPF inválido. Verifique os dígitos informados.'});
+    return;
+  }
+  if (!isValidEmail(email)) {
+    res.status(400).json({error: 'Informe um endereço de e-mail válido.'});
+    return;
+  }
+  if (!isValidPhone(phoneDigits)) {
+    res.status(400).json({error: 'Informe um celular válido com DDD (10 ou 11 dígitos).'});
+    return;
+  }
+  if (password.length < 6) {
+    res.status(400).json({error: 'A senha deve conter no mínimo 6 caracteres.'});
+    return;
+  }
+  if (password !== confirmPassword) {
+    res.status(400).json({error: 'A confirmação de senha não confere.'});
+    return;
+  }
+  if (!isValidCep(cepDigits) || !street || !number || !neighborhood || !city || !BRAZILIAN_UFS.has(state)) {
+    res.status(400).json({error: 'Preencha todos os campos obrigatórios do endereço brasileiro (CEP, Rua, Número, Bairro, Cidade e UF).'});
+    return;
+  }
+  if (!lgpdConsent) {
+    res.status(400).json({error: 'É necessário aceitar a Política de Privacidade (LGPD) para criar sua conta.'});
+    return;
+  }
+
+  const existingEmail = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (existingEmail) {
+    res.status(409).json({error: 'Este e-mail já está cadastrado. Faça login ou recupere sua senha.'});
+    return;
+  }
+  const existingCpf = db.prepare('SELECT id FROM users WHERE cpf = ?').get(cpfDigits);
+  if (existingCpf) {
+    res.status(409).json({error: 'Este CPF já possui cadastro na loja.'});
+    return;
+  }
+
+  const passwordHash = hashPassword(password);
+
+  let createdUserId = 0;
+  const tx = db.transaction(() => {
+    const info = db
+      .prepare(`
+        INSERT INTO users (role, permissions_json, full_name, cpf, email, phone, password_hash, lgpd_consent, lgpd_consent_at)
+        VALUES ('customer', '[]', ?, ?, ?, ?, ?, 1, datetime('now'))
+      `)
+      .run(fullName, cpfDigits, email, phoneDigits, passwordHash);
+    createdUserId = Number(info.lastInsertRowid);
+
+    db.prepare(`
+      INSERT INTO addresses (user_id, label, cep, street, number, complement, neighborhood, city, state, is_default)
+      VALUES (?, 'Principal', ?, ?, ?, ?, ?, ?, ?, 1)
+    `).run(createdUserId, formatCep(cepDigits), street, number, complement, neighborhood, city, state);
+  });
+
+  tx();
+
+  const token = signSessionToken({
+    userId: createdUserId,
+    role: 'customer',
+    email,
+    permissions: [],
+  });
+
+  const addresses = db.prepare('SELECT * FROM addresses WHERE user_id = ?').all(createdUserId);
+
+  res.status(201).json({
+    token,
+    user: {
+      id: createdUserId,
+      role: 'customer',
+      fullName,
+      cpfMasked: maskCpf(cpfDigits),
+      email,
+      phone: phoneDigits,
+      permissions: [],
+    },
+    addresses,
+  });
+});
+
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const email = sanitizeText(req.body?.email, 140).toLowerCase();
+  const password = String(req.body?.password || '');
+
+  if (!isValidEmail(email) || !password) {
+    res.status(400).json({error: 'Informe e-mail e senha para entrar.'});
+    return;
+  }
+
+  const user = db
+    .prepare('SELECT * FROM users WHERE email = ? AND active = 1')
+    .get(email) as {
+      id: number;
+      role: 'customer' | 'admin' | 'staff';
+      permissions_json: string;
+      full_name: string;
+      cpf: string | null;
+      email: string;
+      phone: string;
+      password_hash: string;
+    } | undefined;
+
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    res.status(401).json({error: 'E-mail ou senha incorretos.'});
+    return;
+  }
+
+  const permissions = JSON.parse(user.permissions_json || '[]') as string[];
+  const token = signSessionToken({
+    userId: user.id,
+    role: user.role,
+    email: user.email,
+    permissions,
+  });
+
+  const addresses = db
+    .prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(user.id);
+
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      role: user.role,
+      fullName: user.full_name,
+      cpfMasked: user.cpf ? maskCpf(user.cpf) : null,
+      email: user.email,
+      phone: user.phone,
+      permissions,
+    },
+    addresses,
+  });
+});
+
+app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
+  const email = sanitizeText(req.body?.email, 140).toLowerCase();
+  if (!isValidEmail(email)) {
+    res.status(400).json({error: 'Informe um e-mail válido.'});
+    return;
+  }
+
+  const user = db.prepare('SELECT id FROM users WHERE email = ? AND active = 1').get(email) as {id: number} | undefined;
+  if (!user) {
+    // Do not reveal account existence
+    res.json({
+      message: 'Se este e-mail estiver cadastrado, enviaremos as instruções de redefinição de senha.',
+    });
+    return;
+  }
+
+  const rawToken = crypto.randomBytes(20).toString('hex');
+  const tokenHash = hashResetToken(rawToken);
+  db.prepare(
+    "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+30 minutes'))"
+  ).run(user.id, tokenHash);
+
+  // In preview without external SMTP, provide explicit recovery code feedback only for the requester session
+  res.json({
+    message: 'Código de recuperação gerado com validade de 30 minutos.',
+    previewResetCode: rawToken,
+  });
+});
+
+app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+  const code = sanitizeText(req.body?.code, 100);
+  const newPassword = String(req.body?.newPassword || '');
+  const confirmPassword = String(req.body?.confirmPassword || '');
+
+  if (!code) {
+    res.status(400).json({error: 'Informe o código de recuperação.'});
+    return;
+  }
+  if (newPassword.length < 6 || newPassword !== confirmPassword) {
+    res.status(400).json({error: 'A nova senha deve ter ao menos 6 caracteres e coincidir com a confirmação.'});
+    return;
+  }
+
+  const tokenHash = hashResetToken(code);
+  const reset = db
+    .prepare(
+      "SELECT id, user_id FROM password_resets WHERE token_hash = ? AND used = 0 AND expires_at > datetime('now') ORDER BY id DESC LIMIT 1"
+    )
+    .get(tokenHash) as {id: number; user_id: number} | undefined;
+
+  if (!reset) {
+    res.status(400).json({error: 'Código de recuperação inválido ou expirado.'});
+    return;
+  }
+
+  const newHash = hashPassword(newPassword);
+  db.transaction(() => {
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(
+      newHash,
+      reset.user_id
+    );
+    db.prepare('UPDATE password_resets SET used = 1 WHERE id = ?').run(reset.id);
+  })();
+
+  res.json({message: 'Senha atualizada com sucesso! Agora você já pode entrar.'});
+});
+
+app.get('/api/auth/me', requireAuth, (req: AuthedRequest, res: Response) => {
+  const user = db
+    .prepare('SELECT id, role, permissions_json, full_name, cpf, email, phone, created_at FROM users WHERE id = ?')
+    .get(req.auth!.userId) as {
+      id: number;
+      role: 'customer' | 'admin' | 'staff';
+      permissions_json: string;
+      full_name: string;
+      cpf: string | null;
+      email: string;
+      phone: string;
+      created_at: string;
+    } | undefined;
+
+  if (!user) {
+    res.status(404).json({error: 'Usuário não encontrado.'});
+    return;
+  }
+
+  const addresses = db
+    .prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(user.id);
+
+  res.json({
+    user: {
+      id: user.id,
+      role: user.role,
+      fullName: user.full_name,
+      cpfMasked: user.cpf ? maskCpf(user.cpf) : null,
+      email: user.email,
+      phone: user.phone,
+      permissions: JSON.parse(user.permissions_json || '[]'),
+      createdAt: user.created_at,
+    },
+    addresses,
+  });
+});
+
+app.post('/api/auth/logout', (_req: Request, res: Response) => {
+  res.json({ok: true});
+});
+
+// Customer Private Area Routes
+app.put('/api/account/profile', requireAuth, (req: AuthedRequest, res: Response) => {
+  const fullName = sanitizeText(req.body?.fullName, 120);
+  const phoneDigits = onlyDigits(String(req.body?.phone || ''));
+  if (fullName.length < 3 || !isValidPhone(phoneDigits)) {
+    res.status(400).json({error: 'Informe nome completo válido e celular com DDD.'});
+    return;
+  }
+
+  db.prepare("UPDATE users SET full_name = ?, phone = ?, updated_at = datetime('now') WHERE id = ?").run(
+    fullName,
+    phoneDigits,
+    req.auth!.userId
+  );
+
+  res.json({message: 'Dados pessoais atualizados com sucesso.', fullName, phone: phoneDigits});
+});
+
+app.post('/api/account/addresses', requireAuth, (req: AuthedRequest, res: Response) => {
+  const b = req.body || {};
+  const label = sanitizeText(b.label || 'Endereço', 40);
+  const cepDigits = onlyDigits(String(b.cep || ''));
+  const street = sanitizeText(b.street, 150);
+  const number = sanitizeText(b.number, 20);
+  const complement = sanitizeText(b.complement, 100);
+  const neighborhood = sanitizeText(b.neighborhood, 100);
+  const city = sanitizeText(b.city, 100);
+  const state = sanitizeText(b.state, 2).toUpperCase();
+  const isDefault = Boolean(b.isDefault);
+
+  if (!isValidCep(cepDigits) || !street || !number || !neighborhood || !city || !BRAZILIAN_UFS.has(state)) {
+    res.status(400).json({error: 'Preencha todos os campos obrigatórios do endereço.'});
+    return;
+  }
+
+  db.transaction(() => {
+    if (isDefault) {
+      db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(req.auth!.userId);
+    }
+    db.prepare(`
+      INSERT INTO addresses (user_id, label, cep, street, number, complement, neighborhood, city, state, is_default)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(req.auth!.userId, label, formatCep(cepDigits), street, number, complement, neighborhood, city, state, isDefault ? 1 : 0);
+  })();
+
+  const addresses = db
+    .prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(req.auth!.userId);
+  res.status(201).json({addresses});
+});
+
+app.put('/api/account/addresses/:id', requireAuth, (req: AuthedRequest, res: Response) => {
+  const addressId = Number(req.params.id);
+  const owned = db
+    .prepare('SELECT id FROM addresses WHERE id = ? AND user_id = ?')
+    .get(addressId, req.auth!.userId);
+  if (!owned) {
+    res.status(404).json({error: 'Endereço não encontrado.'});
+    return;
+  }
+
+  const b = req.body || {};
+  const label = sanitizeText(b.label || 'Endereço', 40);
+  const cepDigits = onlyDigits(String(b.cep || ''));
+  const street = sanitizeText(b.street, 150);
+  const number = sanitizeText(b.number, 20);
+  const complement = sanitizeText(b.complement, 100);
+  const neighborhood = sanitizeText(b.neighborhood, 100);
+  const city = sanitizeText(b.city, 100);
+  const state = sanitizeText(b.state, 2).toUpperCase();
+  const isDefault = Boolean(b.isDefault);
+
+  if (!isValidCep(cepDigits) || !street || !number || !neighborhood || !city || !BRAZILIAN_UFS.has(state)) {
+    res.status(400).json({error: 'Dados de endereço inválidos.'});
+    return;
+  }
+
+  db.transaction(() => {
+    if (isDefault) {
+      db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(req.auth!.userId);
+    }
+    db.prepare(`
+      UPDATE addresses
+      SET label = ?, cep = ?, street = ?, number = ?, complement = ?, neighborhood = ?, city = ?, state = ?, is_default = ?
+      WHERE id = ? AND user_id = ?
+    `).run(label, formatCep(cepDigits), street, number, complement, neighborhood, city, state, isDefault ? 1 : 0, addressId, req.auth!.userId);
+  })();
+
+  const addresses = db
+    .prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(req.auth!.userId);
+  res.json({addresses});
+});
+
+app.delete('/api/account/addresses/:id', requireAuth, (req: AuthedRequest, res: Response) => {
+  const addressId = Number(req.params.id);
+  const countRow = db
+    .prepare('SELECT COUNT(*) AS count FROM addresses WHERE user_id = ?')
+    .get(req.auth!.userId) as {count: number};
+  if (countRow.count <= 1) {
+    res.status(400).json({error: 'Você precisa manter pelo menos um endereço cadastrado.'});
+    return;
+  }
+
+  db.prepare('DELETE FROM addresses WHERE id = ? AND user_id = ?').run(addressId, req.auth!.userId);
+  const addresses = db
+    .prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, id DESC')
+    .all(req.auth!.userId);
+  res.json({addresses});
+});
+
+app.get('/api/account/orders', requireAuth, (req: AuthedRequest, res: Response) => {
+  const orders = db
+    .prepare('SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC')
+    .all(req.auth!.userId) as Record<string, unknown>[];
+
+  const itemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
+  const payStmt = db.prepare('SELECT id, gateway, method, status, amount_cents, pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand, created_at FROM payments WHERE order_id = ?');
+  const shipStmt = db.prepare('SELECT * FROM shipments WHERE order_id = ?');
+
+  const enriched = orders.map((order) => ({
+    ...order,
+    shipping_address: JSON.parse(String(order.shipping_address_json || '{}')),
+    items: itemsStmt.all(order.id),
+    payment: payStmt.get(order.id),
+    shipment: shipStmt.get(order.id),
+  }));
+
+  res.json({orders: enriched});
+});
+
+app.post('/api/account/orders/:id/cancel', requireAuth, (req: AuthedRequest, res: Response) => {
+  const orderId = Number(req.params.id);
+  const reason = sanitizeText(req.body?.reason || 'Cancelado pelo cliente', 200);
+
+  const order = db
+    .prepare('SELECT * FROM orders WHERE id = ? AND user_id = ?')
+    .get(orderId, req.auth!.userId) as {id: number; status: string; order_number: string} | undefined;
+
+  if (!order) {
+    res.status(404).json({error: 'Pedido não encontrado.'});
+    return;
+  }
+
+  if (!['aguardando_pagamento', 'pago', 'em_separacao'].includes(order.status)) {
+    res.status(400).json({error: 'Pedidos já enviados ou entregues não podem ser cancelados diretamente. Entre em contato pelo suporte.'});
+    return;
+  }
+
+  const tx = db.transaction(() => {
+    const items = db.prepare('SELECT product_id, quantity FROM order_items WHERE order_id = ?').all(order.id) as {
+      product_id: number;
+      quantity: number;
+    }[];
+    const restoreStock = db.prepare(
+      "UPDATE products SET stock = stock + ?, sales_count = MAX(0, sales_count - ?), updated_at = datetime('now') WHERE id = ?"
+    );
+    for (const item of items) {
+      restoreStock.run(item.quantity, item.quantity, item.product_id);
+    }
+    db.prepare(
+      "UPDATE orders SET status = 'cancelado', payment_status = 'cancelled', cancel_reason = ?, updated_at = datetime('now') WHERE id = ?"
+    ).run(reason, order.id);
+    db.prepare("UPDATE payments SET status = 'cancelled' WHERE order_id = ?").run(order.id);
+    db.prepare("UPDATE shipments SET status = 'cancelado', updated_at = datetime('now') WHERE order_id = ?").run(order.id);
+  });
+
+  tx();
+  broadcastEvent('catalog_updated', {reason: 'order_cancelled'});
+  broadcastEvent('order_updated', {orderId: order.id, status: 'cancelado'});
+
+  res.json({message: `Pedido ${order.order_number} cancelado e estoque restaurado.`});
+});
+
+app.delete('/api/account', requireAuth, (req: AuthedRequest, res: Response) => {
+  const userId = req.auth!.userId;
+  if (req.auth!.role !== 'customer') {
+    res.status(403).json({error: 'Contas administrativas não podem ser encerradas por esta rota.'});
+    return;
+  }
+
+  const ordersCount = db
+    .prepare('SELECT COUNT(*) AS count FROM orders WHERE user_id = ?')
+    .get(userId) as {count: number};
+
+  if (ordersCount.count > 0) {
+    // LGPD: anonymize personal data while preserving fiscal order ledger
+    const anonymizedEmail = `encerrada_${userId}_${Date.now()}@anonimizado.lgpd`;
+    db.transaction(() => {
+      db.prepare(
+        "UPDATE users SET full_name = 'Conta Encerrada (LGPD)', cpf = NULL, email = ?, phone = '', active = 0, updated_at = datetime('now') WHERE id = ?"
+      ).run(anonymizedEmail, userId);
+      db.prepare('DELETE FROM addresses WHERE user_id = ?').run(userId);
+    })();
+  } else {
+    db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+  }
+
+  res.json({message: 'Sua conta foi encerrada e seus dados pessoais foram removidos conforme a LGPD.'});
+});
+
+// Checkout & Payment Processing
+app.post('/api/checkout', requireAuth, async (req: AuthedRequest, res: Response) => {
+  const b = req.body || {};
+  const items = Array.isArray(b.items) ? b.items : [];
+  const shippingAddress = b.address || {};
+  const shippingMethodId = b.shippingMethod === 'sedex' ? 'sedex' : 'pac';
+  const paymentMethod = b.paymentMethod as 'pix' | 'credit_card' | 'boleto';
+
+  if (items.length === 0) {
+    res.status(400).json({error: 'Seu carrinho está vazio.'});
+    return;
+  }
+  if (!['pix', 'credit_card', 'boleto'].includes(paymentMethod)) {
+    res.status(400).json({error: 'Forma de pagamento inválida.'});
+    return;
+  }
+
+  const cepDigits = onlyDigits(String(shippingAddress.cep || ''));
+  const street = sanitizeText(shippingAddress.street, 150);
+  const number = sanitizeText(shippingAddress.number, 20);
+  const complement = sanitizeText(shippingAddress.complement, 100);
+  const neighborhood = sanitizeText(shippingAddress.neighborhood, 100);
+  const city = sanitizeText(shippingAddress.city, 100);
+  const state = sanitizeText(shippingAddress.state, 2).toUpperCase();
+
+  if (!isValidCep(cepDigits) || !street || !number || !neighborhood || !city || !BRAZILIAN_UFS.has(state)) {
+    res.status(400).json({error: 'Endereço de entrega incompleto. Verifique antes de finalizar.'});
+    return;
+  }
+
+  let cardLast4 = '';
+  let cardBrand = '';
+  if (paymentMethod === 'credit_card') {
+    const rawCardDigits = onlyDigits(String(b.cardTokenLast4 || b.cardNumber || ''));
+    if (rawCardDigits.length < 4) {
+      res.status(400).json({error: 'Dados do cartão inválidos para tokenização segura.'});
+      return;
+    }
+    cardLast4 = rawCardDigits.slice(-4);
+    cardBrand = sanitizeText(b.cardBrand || 'Visa / Mastercard', 30);
+    // Notice: full card number & CVV are NEVER persisted to the database
+  }
+
+  let createdOrder: Record<string, unknown> | null = null;
+  let orderNumber = '';
+  let totalCents = 0;
+
+  try {
+    const tx = db.transaction(() => {
+      let subtotalCents = 0;
+      const lineItems: {productId: number; name: string; unitPriceCents: number; quantity: number; lineTotalCents: number}[] = [];
+
+      const findProduct = db.prepare('SELECT id, name, price_cents, promo_price_cents, stock, active FROM products WHERE id = ?');
+      const decrementStock = db.prepare(
+        "UPDATE products SET stock = stock - ?, sales_count = sales_count + ?, updated_at = datetime('now') WHERE id = ? AND stock >= ?"
+      );
+
+      for (const reqItem of items) {
+        const productId = Number(reqItem?.productId);
+        const quantity = Math.max(1, Math.min(99, Math.round(Number(reqItem?.quantity) || 1)));
+        const product = findProduct.get(productId) as {
+          id: number;
+          name: string;
+          price_cents: number;
+          promo_price_cents: number | null;
+          stock: number;
+          active: number;
+        } | undefined;
+
+        if (!product || !product.active) {
+          throw new Error('Um dos produtos selecionados não está mais disponível.');
+        }
+        if (product.stock < quantity) {
+          throw new Error(`Estoque insuficiente para "${product.name}". Disponível: ${product.stock}.`);
+        }
+
+        const unitPrice = product.promo_price_cents !== null && product.promo_price_cents < product.price_cents
+          ? product.promo_price_cents
+          : product.price_cents;
+
+        const updated = decrementStock.run(quantity, quantity, product.id, quantity);
+        if (updated.changes === 0) {
+          throw new Error(`Estoque atualizado concorrentemente para "${product.name}".`);
+        }
+
+        const lineTotal = unitPrice * quantity;
+        subtotalCents += lineTotal;
+        lineItems.push({
+          productId: product.id,
+          name: product.name,
+          unitPriceCents: unitPrice,
+          quantity,
+          lineTotalCents: lineTotal,
+        });
+      }
+
+      const freight = calculateFreightByCep(cepDigits, subtotalCents);
+      const shippingCents = shippingMethodId === 'sedex' ? freight.sedexCents : freight.pacCents;
+      const estimatedDays = shippingMethodId === 'sedex' ? freight.sedexDays : freight.pacDays;
+      const shippingLabel = shippingMethodId === 'sedex'
+        ? 'Correios SEDEX Expresso'
+        : freight.freeEligible
+          ? 'Frete Grátis (PAC)'
+          : 'Correios PAC';
+
+      // PIX gets 5% instant discount on subtotal
+      const discountCents = paymentMethod === 'pix' ? Math.round(subtotalCents * 0.05) : 0;
+      totalCents = subtotalCents + shippingCents - discountCents;
+
+      orderNumber = `SB-${new Date().getFullYear()}-${crypto.randomInt(100000, 999999)}`;
+      const initialStatus = paymentMethod === 'credit_card' ? 'pago' : 'aguardando_pagamento';
+      const initialPaymentStatus = paymentMethod === 'credit_card' ? 'approved' : 'pending';
+
+      const cleanAddressJson = JSON.stringify({
+        cep: formatCep(cepDigits),
+        street,
+        number,
+        complement,
+        neighborhood,
+        city,
+        state,
+      });
+
+      const orderInfo = db
+        .prepare(`
+          INSERT INTO orders (
+            order_number, user_id, status, subtotal_cents, shipping_cents, discount_cents, total_cents,
+            shipping_method, shipping_cep, shipping_address_json, payment_method, payment_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          orderNumber,
+          req.auth!.userId,
+          initialStatus,
+          subtotalCents,
+          shippingCents,
+          discountCents,
+          totalCents,
+          shippingLabel,
+          formatCep(cepDigits),
+          cleanAddressJson,
+          paymentMethod,
+          initialPaymentStatus
+        );
+
+      const orderId = Number(orderInfo.lastInsertRowid);
+
+      const insertOrderItem = db.prepare(`
+        INSERT INTO order_items (order_id, product_id, product_name, unit_price_cents, quantity, total_cents)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const li of lineItems) {
+        insertOrderItem.run(orderId, li.productId, li.name, li.unitPriceCents, li.quantity, li.lineTotalCents);
+      }
+
+      const pixCopyPaste =
+        paymentMethod === 'pix'
+          ? `00020126580014BR.GOV.BCB.PIX0136suzybely@pagamentos.com.br520400005303986540${(totalCents / 100).toFixed(2)}5802BR5910SUZY BELY6009SAO PAULO62140510${orderNumber}6304`
+          : '';
+      const boletoBarcode =
+        paymentMethod === 'boleto'
+          ? `23793.38128 60000.000003 00000.000408 1 ${String(10000000000 + totalCents).slice(-11)}`
+          : '';
+
+      db.prepare(`
+        INSERT INTO payments (
+          order_id, gateway, method, external_id, status, amount_cents,
+          pix_qr_code, pix_copy_paste, boleto_barcode, card_last4, card_brand
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        orderId,
+        process.env.MERCADOPAGO_ACCESS_TOKEN ? 'mercadopago' : 'mercadopago_integrado',
+        paymentMethod,
+        `MP-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+        initialPaymentStatus,
+        totalCents,
+        pixCopyPaste ? `QR-${orderNumber}` : '',
+        pixCopyPaste,
+        boletoBarcode,
+        cardLast4,
+        cardBrand
+      );
+
+      db.prepare(`
+        INSERT INTO shipments (order_id, carrier, service, cost_cents, estimated_days, status)
+        VALUES (?, 'Correios', ?, ?, ?, ?)
+      `).run(
+        orderId,
+        shippingMethodId.toUpperCase(),
+        shippingCents,
+        estimatedDays,
+        initialStatus === 'pago' ? 'em_separacao' : 'aguardando_pagamento'
+      );
+
+      createdOrder = {
+        id: orderId,
+        orderNumber,
+        status: initialStatus,
+        subtotalCents,
+        shippingCents,
+        discountCents,
+        totalCents,
+        shippingLabel,
+        estimatedDays,
+        paymentMethod,
+        paymentStatus: initialPaymentStatus,
+        pixCopyPaste,
+        boletoBarcode,
+        cardLast4,
+        cardBrand,
+        items: lineItems,
+        emailSentTo: req.auth!.email,
+      };
+    });
+
+    tx();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Erro ao processar pedido.';
+    res.status(400).json({error: message});
+    return;
+  }
+
+  // Optional live Mercado Pago preference/payment call when MERCADOPAGO_ACCESS_TOKEN is configured
+  if (process.env.MERCADOPAGO_ACCESS_TOKEN && paymentMethod === 'pix' && createdOrder) {
+    try {
+      const mpRes = await fetch('https://api.mercadopago.com/v1/payments', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.MERCADOPAGO_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+          'X-Idempotency-Key': orderNumber,
+        },
+        body: JSON.stringify({
+          transaction_amount: Number((totalCents / 100).toFixed(2)),
+          description: `Pedido ${orderNumber} - Suzy Bely Bijuterias`,
+          payment_method_id: 'pix',
+          payer: {email: req.auth!.email},
+        }),
+      });
+      if (mpRes.ok) {
+        const mpData = (await mpRes.json()) as {
+          id?: number | string;
+          point_of_interaction?: {transaction_data?: {qr_code?: string}};
+        };
+        const liveQr = mpData.point_of_interaction?.transaction_data?.qr_code;
+        if (liveQr && createdOrder) {
+          (createdOrder as Record<string, unknown>).pixCopyPaste = liveQr;
+          db.prepare('UPDATE payments SET external_id = ?, pix_copy_paste = ? WHERE order_id = ?').run(
+            String(mpData.id || ''),
+            liveQr,
+            (createdOrder as {id: number}).id
+          );
+        }
+      }
+    } catch {
+      // Keep generated PIX code gracefully
+    }
+  }
+
+  broadcastEvent('catalog_updated', {reason: 'order_created'});
+  broadcastEvent('order_updated', {orderNumber});
+
+  res.status(201).json({order: createdOrder});
+});
+
+app.post('/api/orders/:id/confirm-pix', requireAuth, (req: AuthedRequest, res: Response) => {
+  const orderId = Number(req.params.id);
+  const order = db
+    .prepare('SELECT id, user_id, payment_method, status FROM orders WHERE id = ? AND user_id = ?')
+    .get(orderId, req.auth!.userId) as {id: number; user_id: number; payment_method: string; status: string} | undefined;
+
+  if (!order) {
+    res.status(404).json({error: 'Pedido não encontrado.'});
+    return;
+  }
+  if (order.status !== 'aguardando_pagamento') {
+    res.status(400).json({error: 'Este pedido não está aguardando pagamento.'});
+    return;
+  }
+
+  db.transaction(() => {
+    db.prepare("UPDATE orders SET status = 'pago', payment_status = 'approved', updated_at = datetime('now') WHERE id = ?").run(order.id);
+    db.prepare("UPDATE payments SET status = 'approved' WHERE order_id = ?").run(order.id);
+    db.prepare("UPDATE shipments SET status = 'em_separacao', updated_at = datetime('now') WHERE order_id = ?").run(order.id);
+  })();
+
+  broadcastEvent('order_updated', {orderId: order.id, status: 'pago'});
+  res.json({message: 'Pagamento confirmado! Seu pedido já entrou em separação.'});
+});
+
+// ================= ADMIN & STAFF ROUTES =================
+
+app.get('/api/admin/status', (_req: Request, res: Response) => {
+  const adminCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1")
+    .get() as {count: number};
+  const hasEnvPasscode = Boolean(process.env.ADMIN_ACCESS_PASSCODE?.trim());
+
+  res.json({
+    needsBootstrap: adminCountRow.count === 0 && !hasEnvPasscode,
+    hasEnvPasscode,
+  });
+});
+
+app.post('/api/admin/bootstrap', (req: Request, res: Response) => {
+  const hasEnvPasscode = Boolean(process.env.ADMIN_ACCESS_PASSCODE?.trim());
+  if (hasEnvPasscode) {
+    res.status(403).json({error: 'Acesso administrativo gerenciado por variável de ambiente.'});
+    return;
+  }
+
+  const adminCountRow = db
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1")
+    .get() as {count: number};
+  if (adminCountRow.count > 0) {
+    res.status(403).json({error: 'O administrador principal da loja já foi configurado.'});
+    return;
+  }
+
+  const fullName = sanitizeText(req.body?.fullName || 'Suzy Bely Proprietária', 120);
+  const email = sanitizeText(req.body?.email, 140).toLowerCase();
+  const password = String(req.body?.password || '');
+
+  if (!isValidEmail(email) || password.length < 6) {
+    res.status(400).json({error: 'Informe um e-mail válido e senha com no mínimo 6 caracteres.'});
+    return;
+  }
+
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (existing) {
+    res.status(409).json({error: 'Este e-mail já pertence a outro cadastro.'});
+    return;
+  }
+
+  const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff'];
+  const passwordHash = hashPassword(password);
+
+  const info = db
+    .prepare(`
+      INSERT INTO users (role, permissions_json, full_name, email, phone, password_hash, lgpd_consent, lgpd_consent_at)
+      VALUES ('admin', ?, ?, ?, '', ?, 1, datetime('now'))
+    `)
+    .run(JSON.stringify(allPerms), fullName, email, passwordHash);
+
+  const userId = Number(info.lastInsertRowid);
+  logAudit(userId, email, 'BOOTSTRAP_ADMIN', 'user', userId, 'Conta de proprietária configurada no primeiro acesso.');
+
+  const token = signSessionToken({
+    userId,
+    role: 'admin',
+    email,
+    permissions: allPerms,
+  });
+
+  res.status(201).json({
+    token,
+    user: {
+      id: userId,
+      role: 'admin',
+      fullName,
+      email,
+      permissions: allPerms,
+    },
+  });
+});
+
+app.post('/api/admin/login', (req: Request, res: Response) => {
+  const email = sanitizeText(req.body?.email, 140).toLowerCase();
+  const password = String(req.body?.password || '');
+  const envPasscode = process.env.ADMIN_ACCESS_PASSCODE?.trim();
+
+  if (envPasscode && password === envPasscode) {
+    // Ensure a backed admin record exists for audit logs
+    let adminUser = db
+      .prepare("SELECT id, email, full_name, permissions_json FROM users WHERE role = 'admin' AND active = 1 LIMIT 1")
+      .get() as {id: number; email: string; full_name: string; permissions_json: string} | undefined;
+
+    const allPerms = ['manage_products', 'manage_orders', 'manage_customers', 'view_reports', 'manage_banners', 'manage_staff'];
+    if (!adminUser) {
+      const adminEmail = email && isValidEmail(email) ? email : 'admin@suzybely.com.br';
+      const info = db
+        .prepare(`
+          INSERT INTO users (role, permissions_json, full_name, email, password_hash, lgpd_consent, lgpd_consent_at)
+          VALUES ('admin', ?, 'Administração Suzy Bely', ?, ?, 1, datetime('now'))
+        `)
+        .run(JSON.stringify(allPerms), adminEmail, hashPassword(crypto.randomBytes(16).toString('hex')));
+      adminUser = {
+        id: Number(info.lastInsertRowid),
+        email: adminEmail,
+        full_name: 'Administração Suzy Bely',
+        permissions_json: JSON.stringify(allPerms),
+      };
+    }
+
+    const token = signSessionToken({
+      userId: adminUser.id,
+      role: 'admin',
+      email: adminUser.email,
+      permissions: allPerms,
+    });
+    res.json({
+      token,
+      user: {
+        id: adminUser.id,
+        role: 'admin',
+        fullName: adminUser.full_name,
+        email: adminUser.email,
+        permissions: allPerms,
+      },
+    });
+    return;
+  }
+
+  if (!isValidEmail(email) || !password) {
+    res.status(400).json({error: 'Informe e-mail e senha administrativos.'});
+    return;
+  }
+
+  const user = db
+    .prepare("SELECT * FROM users WHERE email = ? AND role IN ('admin', 'staff') AND active = 1")
+    .get(email) as {
+      id: number;
+      role: 'admin' | 'staff';
+      permissions_json: string;
+      full_name: string;
+      email: string;
+      password_hash: string;
+    } | undefined;
+
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    res.status(401).json({error: 'Credenciais administrativas inválidas.'});
+    return;
+  }
+
+  const permissions = JSON.parse(user.permissions_json || '[]') as string[];
+  const token = signSessionToken({
+    userId: user.id,
+    role: user.role,
+    email: user.email,
+    permissions,
+  });
+
+  res.json({
+    token,
+    user: {
+      id: user.id,
+      role: user.role,
+      fullName: user.full_name,
+      email: user.email,
+      permissions,
+    },
+  });
+});
+
+app.get('/api/admin/dashboard', requireAdminPermission(), (_req: AuthedRequest, res: Response) => {
+  const salesSummary = db
+    .prepare(`
+      SELECT
+        COUNT(*) AS total_orders,
+        COALESCE(SUM(CASE WHEN status != 'cancelado' THEN total_cents ELSE 0 END), 0) AS revenue_cents,
+        COALESCE(SUM(CASE WHEN status = 'aguardando_pagamento' THEN 1 ELSE 0 END), 0) AS pending_orders,
+        COALESCE(SUM(CASE WHEN status IN ('pago', 'em_separacao') THEN 1 ELSE 0 END), 0) AS processing_orders,
+        COALESCE(SUM(CASE WHEN status IN ('enviado', 'entregue') THEN 1 ELSE 0 END), 0) AS fulfilled_orders
+      FROM orders
+    `)
+    .get();
+
+  const inventorySummary = db
+    .prepare(`
+      SELECT
+        COUNT(*) AS total_products,
+        COALESCE(SUM(stock), 0) AS total_units,
+        COALESCE(SUM(CASE WHEN stock <= 5 THEN 1 ELSE 0 END), 0) AS low_stock_count,
+        COALESCE(SUM(CASE WHEN promo_price_cents IS NOT NULL AND promo_price_cents < price_cents THEN 1 ELSE 0 END), 0) AS promo_count
+      FROM products
+      WHERE active = 1
+    `)
+    .get();
+
+  const customerCount = db
+    .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'customer' AND active = 1")
+    .get() as {count: number};
+
+  const categoryBreakdown = db
+    .prepare(`
+      SELECT
+        c.name AS category_name,
+        COUNT(p.id) AS product_count,
+        COALESCE(SUM(p.stock), 0) AS stock_units,
+        COALESCE(SUM(oi.total_cents), 0) AS sales_cents
+      FROM categories c
+      LEFT JOIN products p ON p.category_id = c.id AND p.active = 1
+      LEFT JOIN order_items oi ON oi.product_id = p.id
+      GROUP BY c.id
+      ORDER BY c.sort_order ASC
+    `)
+    .all();
+
+  const allProducts = enrichProducts(
+    db
+      .prepare(`
+        SELECT p.*, c.name AS category_name, c.slug AS category_slug
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+        ORDER BY p.active DESC, p.id DESC
+      `)
+      .all() as Record<string, unknown>[]
+  );
+
+  const categories = db
+    .prepare('SELECT * FROM categories ORDER BY sort_order ASC, id ASC')
+    .all();
+
+  const auditLogs = db
+    .prepare('SELECT * FROM audit_logs ORDER BY id DESC LIMIT 30')
+    .all();
+
+  res.json({
+    salesSummary,
+    inventorySummary,
+    customerCount: customerCount.count,
+    categoryBreakdown,
+    products: allProducts,
+    categories,
+    auditLogs,
+  });
+});
+
+app.post('/api/admin/products', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const b = req.body || {};
+  const categoryId = Number(b.categoryId);
+  const name = sanitizeText(b.name, 140);
+  const description = sanitizeText(b.description, 2000);
+  const material = sanitizeText(b.material, 200);
+  const color = sanitizeText(b.color, 80);
+  const dimensions = sanitizeText(b.dimensions, 120);
+  const priceCents = Math.round(Number(b.priceCents) || 0);
+  const promoPriceCents = b.promoPriceCents !== null && b.promoPriceCents !== undefined && b.promoPriceCents !== ''
+    ? Math.round(Number(b.promoPriceCents))
+    : null;
+  const stock = Math.max(0, Math.round(Number(b.stock) || 0));
+  const isFeatured = b.isFeatured ? 1 : 0;
+  const isNew = b.isNew ? 1 : 0;
+  const isBestseller = b.isBestseller ? 1 : 0;
+  const imageUrls = (Array.isArray(b.imageUrls) ? b.imageUrls : [b.imageUrl])
+    .filter((u: unknown) => isSafeImageUrl(u))
+    .map((u: string) => u.trim());
+
+  if (!categoryId || name.length < 2 || !description || !material || !color || priceCents <= 0) {
+    res.status(400).json({error: 'Preencha categoria, nome, descrição, material, cor e preço válido.'});
+    return;
+  }
+  if (promoPriceCents !== null && (promoPriceCents < 0 || promoPriceCents >= priceCents)) {
+    res.status(400).json({error: 'O preço promocional deve ser menor que o preço original.'});
+    return;
+  }
+
+  const baseSlug = slugify(name) || `peca-${Date.now()}`;
+  const slug = `${baseSlug}-${crypto.randomInt(100, 999)}`;
+
+  const finalImages = imageUrls.length > 0
+    ? imageUrls
+    : ['/src/assets/images/product_brincos_dourados_1795522216821.jpg'];
+
+  let newId = 0;
+  db.transaction(() => {
+    const info = db
+      .prepare(`
+        INSERT INTO products (
+          category_id, name, slug, description, material, color, dimensions,
+          price_cents, promo_price_cents, stock, is_featured, is_new, is_bestseller, active
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `)
+      .run(
+        categoryId,
+        name,
+        slug,
+        description,
+        material,
+        color,
+        dimensions,
+        priceCents,
+        promoPriceCents,
+        stock,
+        isFeatured,
+        isNew,
+        isBestseller
+      );
+    newId = Number(info.lastInsertRowid);
+    const insImg = db.prepare('INSERT INTO product_images (product_id, url, alt, sort_order) VALUES (?, ?, ?, ?)');
+    finalImages.forEach((url: string, idx: number) => insImg.run(newId, url, name, idx));
+    logAudit(req.auth!.userId, req.auth!.email, 'CREATE_PRODUCT', 'product', newId, `Peça cadastrada: ${name}`);
+  })();
+
+  broadcastEvent('catalog_updated', {reason: 'product_created', productId: newId});
+  res.status(201).json({id: newId, message: 'Joia/bijuteria cadastrada e publicada em tempo real!'});
+});
+
+app.put('/api/admin/products/:id', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT id, name FROM products WHERE id = ?').get(id) as {id: number; name: string} | undefined;
+  if (!existing) {
+    res.status(404).json({error: 'Produto não encontrado.'});
+    return;
+  }
+
+  const b = req.body || {};
+  const categoryId = Number(b.categoryId);
+  const name = sanitizeText(b.name, 140);
+  const description = sanitizeText(b.description, 2000);
+  const material = sanitizeText(b.material, 200);
+  const color = sanitizeText(b.color, 80);
+  const dimensions = sanitizeText(b.dimensions, 120);
+  const priceCents = Math.round(Number(b.priceCents) || 0);
+  const promoPriceCents = b.promoPriceCents !== null && b.promoPriceCents !== undefined && b.promoPriceCents !== ''
+    ? Math.round(Number(b.promoPriceCents))
+    : null;
+  const stock = Math.max(0, Math.round(Number(b.stock) || 0));
+  const isFeatured = b.isFeatured ? 1 : 0;
+  const isNew = b.isNew ? 1 : 0;
+  const isBestseller = b.isBestseller ? 1 : 0;
+  const active = b.active === false ? 0 : 1;
+  const imageUrls = (Array.isArray(b.imageUrls) ? b.imageUrls : [b.imageUrl])
+    .filter((u: unknown) => isSafeImageUrl(u))
+    .map((u: string) => u.trim());
+
+  if (!categoryId || name.length < 2 || !description || !material || !color || priceCents <= 0) {
+    res.status(400).json({error: 'Dados do produto incompletos ou inválidos.'});
+    return;
+  }
+  if (promoPriceCents !== null && (promoPriceCents < 0 || promoPriceCents >= priceCents)) {
+    res.status(400).json({error: 'O preço promocional deve ser menor que o preço original.'});
+    return;
+  }
+
+  db.transaction(() => {
+    db.prepare(`
+      UPDATE products SET
+        category_id = ?, name = ?, description = ?, material = ?, color = ?, dimensions = ?,
+        price_cents = ?, promo_price_cents = ?, stock = ?, is_featured = ?, is_new = ?,
+        is_bestseller = ?, active = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(
+      categoryId,
+      name,
+      description,
+      material,
+      color,
+      dimensions,
+      priceCents,
+      promoPriceCents,
+      stock,
+      isFeatured,
+      isNew,
+      isBestseller,
+      active,
+      id
+    );
+
+    if (imageUrls.length > 0) {
+      db.prepare('DELETE FROM product_images WHERE product_id = ?').run(id);
+      const insImg = db.prepare('INSERT INTO product_images (product_id, url, alt, sort_order) VALUES (?, ?, ?, ?)');
+      imageUrls.forEach((url: string, idx: number) => insImg.run(id, url, name, idx));
+    }
+
+    logAudit(req.auth!.userId, req.auth!.email, 'UPDATE_PRODUCT', 'product', id, `Atualizado: ${name}`);
+  })();
+
+  broadcastEvent('catalog_updated', {reason: 'product_updated', productId: id});
+  res.json({message: 'Produto atualizado em tempo real!'});
+});
+
+app.patch('/api/admin/products/:id/quick-stock', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const product = db.prepare('SELECT id, name, price_cents FROM products WHERE id = ?').get(id) as {
+    id: number;
+    name: string;
+    price_cents: number;
+  } | undefined;
+  if (!product) {
+    res.status(404).json({error: 'Produto não encontrado.'});
+    return;
+  }
+
+  const priceCents = req.body?.priceCents !== undefined ? Math.max(100, Math.round(Number(req.body.priceCents))) : product.price_cents;
+  const promoPriceCents = req.body?.promoPriceCents !== null && req.body?.promoPriceCents !== undefined && req.body?.promoPriceCents !== ''
+    ? Math.round(Number(req.body.promoPriceCents))
+    : null;
+  const stock = req.body?.stock !== undefined ? Math.max(0, Math.round(Number(req.body.stock))) : undefined;
+  const active = req.body?.active !== undefined ? (req.body.active ? 1 : 0) : undefined;
+
+  if (promoPriceCents !== null && (promoPriceCents <= 0 || promoPriceCents >= priceCents)) {
+    res.status(400).json({error: 'O preço promocional deve ser maior que zero e menor que o preço original.'});
+    return;
+  }
+
+  db.transaction(() => {
+    if (stock !== undefined && active !== undefined) {
+      db.prepare(
+        "UPDATE products SET price_cents = ?, promo_price_cents = ?, stock = ?, active = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(priceCents, promoPriceCents, stock, active, id);
+    } else if (stock !== undefined) {
+      db.prepare(
+        "UPDATE products SET price_cents = ?, promo_price_cents = ?, stock = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(priceCents, promoPriceCents, stock, id);
+    } else {
+      db.prepare(
+        "UPDATE products SET price_cents = ?, promo_price_cents = ?, updated_at = datetime('now') WHERE id = ?"
+      ).run(priceCents, promoPriceCents, id);
+    }
+    logAudit(
+      req.auth!.userId,
+      req.auth!.email,
+      'QUICK_INVENTORY_UPDATE',
+      'product',
+      id,
+      `${product.name}: R$ ${(priceCents / 100).toFixed(2)}, promo=${promoPriceCents !== null ? `R$ ${(promoPriceCents / 100).toFixed(2)}` : 'sem promo'}, estoque=${stock ?? 'mantido'}`
+    );
+  })();
+
+  broadcastEvent('catalog_updated', {reason: 'quick_stock', productId: id});
+  res.json({message: 'Preço, desconto e estoque atualizados em tempo real!'});
+});
+
+app.delete('/api/admin/products/:id', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const usedInOrders = db.prepare('SELECT COUNT(*) AS count FROM order_items WHERE product_id = ?').get(id) as {count: number};
+  const product = db.prepare('SELECT name FROM products WHERE id = ?').get(id) as {name: string} | undefined;
+  if (!product) {
+    res.status(404).json({error: 'Produto não encontrado.'});
+    return;
+  }
+
+  if (usedInOrders.count > 0) {
+    // Archive instead of breaking order history FK
+    db.prepare("UPDATE products SET active = 0, updated_at = datetime('now') WHERE id = ?").run(id);
+    logAudit(req.auth!.userId, req.auth!.email, 'ARCHIVE_PRODUCT', 'product', id, `Arquivado (com histórico de pedidos): ${product.name}`);
+  } else {
+    db.prepare('DELETE FROM products WHERE id = ?').run(id);
+    logAudit(req.auth!.userId, req.auth!.email, 'DELETE_PRODUCT', 'product', id, `Excluído: ${product.name}`);
+  }
+
+  broadcastEvent('catalog_updated', {reason: 'product_deleted', productId: id});
+  res.json({message: 'Produto removido do catálogo ativo.'});
+});
+
+// Admin Categories
+app.post('/api/admin/categories', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const name = sanitizeText(req.body?.name, 60);
+  const description = sanitizeText(req.body?.description, 200);
+  if (name.length < 2) {
+    res.status(400).json({error: 'Nome da categoria obrigatório.'});
+    return;
+  }
+  const slug = slugify(name);
+  const exists = db.prepare('SELECT id FROM categories WHERE slug = ?').get(slug);
+  if (exists) {
+    res.status(409).json({error: 'Já existe uma categoria com este nome.'});
+    return;
+  }
+  const maxOrder = (db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM categories').get() as {m: number}).m;
+  const info = db
+    .prepare('INSERT INTO categories (name, slug, description, sort_order) VALUES (?, ?, ?, ?)')
+    .run(name, slug, description, maxOrder + 1);
+  logAudit(req.auth!.userId, req.auth!.email, 'CREATE_CATEGORY', 'category', Number(info.lastInsertRowid), name);
+  broadcastEvent('catalog_updated', {reason: 'category_created'});
+  res.status(201).json({id: Number(info.lastInsertRowid), name, slug, description});
+});
+
+app.put('/api/admin/categories/:id', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const name = sanitizeText(req.body?.name, 60);
+  const description = sanitizeText(req.body?.description, 200);
+  if (!name) {
+    res.status(400).json({error: 'Nome da categoria obrigatório.'});
+    return;
+  }
+  db.prepare('UPDATE categories SET name = ?, description = ? WHERE id = ?').run(name, description, id);
+  logAudit(req.auth!.userId, req.auth!.email, 'UPDATE_CATEGORY', 'category', id, name);
+  broadcastEvent('catalog_updated', {reason: 'category_updated'});
+  res.json({message: 'Categoria atualizada.'});
+});
+
+app.delete('/api/admin/categories/:id', requireAdminPermission('manage_products'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const count = (db.prepare('SELECT COUNT(*) AS count FROM products WHERE category_id = ?').get(id) as {count: number}).count;
+  if (count > 0) {
+    res.status(400).json({error: 'Não é possível excluir categoria que possui produtos vinculados.'});
+    return;
+  }
+  db.prepare('DELETE FROM categories WHERE id = ?').run(id);
+  logAudit(req.auth!.userId, req.auth!.email, 'DELETE_CATEGORY', 'category', id, 'Categoria removida');
+  broadcastEvent('catalog_updated', {reason: 'category_deleted'});
+  res.json({message: 'Categoria excluída.'});
+});
+
+// Admin Orders
+app.get('/api/admin/orders', requireAdminPermission('manage_orders'), (_req: AuthedRequest, res: Response) => {
+  const orders = db
+    .prepare(`
+      SELECT o.*, u.full_name AS customer_name, u.email AS customer_email, u.phone AS customer_phone
+      FROM orders o
+      JOIN users u ON u.id = o.user_id
+      ORDER BY o.id DESC
+    `)
+    .all() as Record<string, unknown>[];
+
+  const itemsStmt = db.prepare('SELECT * FROM order_items WHERE order_id = ?');
+  const enriched = orders.map((o) => ({
+    ...o,
+    shipping_address: JSON.parse(String(o.shipping_address_json || '{}')),
+    items: itemsStmt.all(o.id),
+  }));
+  res.json({orders: enriched});
+});
+
+app.patch('/api/admin/orders/:id/status', requireAdminPermission('manage_orders'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const status = String(req.body?.status || '');
+  const trackingCode = sanitizeText(req.body?.trackingCode, 60);
+  const validStatuses = ['aguardando_pagamento', 'pago', 'em_separacao', 'enviado', 'entregue', 'cancelado'];
+
+  if (!validStatuses.includes(status)) {
+    res.status(400).json({error: 'Status de pedido inválido.'});
+    return;
+  }
+
+  const current = db.prepare('SELECT id, status, order_number FROM orders WHERE id = ?').get(id) as {
+    id: number;
+    status: string;
+    order_number: string;
+  } | undefined;
+  if (!current) {
+    res.status(404).json({error: 'Pedido não encontrado.'});
+    return;
+  }
+
+  db.transaction(() => {
+    if (status === 'cancelado' && current.status !== 'cancelado') {
+      const items = db.prepare('SELECT product_id, quantity FROM order_items WHERE order_id = ?').all(id) as {
+        product_id: number;
+        quantity: number;
+      }[];
+      const restore = db.prepare(
+        "UPDATE products SET stock = stock + ?, sales_count = MAX(0, sales_count - ?), updated_at = datetime('now') WHERE id = ?"
+      );
+      for (const item of items) {
+        restore.run(item.quantity, item.quantity, item.product_id);
+      }
+      db.prepare("UPDATE payments SET status = 'cancelled' WHERE order_id = ?").run(id);
+    } else if (status === 'pago') {
+      db.prepare("UPDATE orders SET payment_status = 'approved' WHERE id = ?").run(id);
+      db.prepare("UPDATE payments SET status = 'approved' WHERE order_id = ?").run(id);
+    }
+
+    db.prepare(
+      "UPDATE orders SET status = ?, tracking_code = COALESCE(NULLIF(?, ''), tracking_code), updated_at = datetime('now') WHERE id = ?"
+    ).run(status, trackingCode, id);
+    db.prepare(
+      "UPDATE shipments SET status = ?, tracking_code = COALESCE(NULLIF(?, ''), tracking_code), updated_at = datetime('now') WHERE order_id = ?"
+    ).run(status, trackingCode, id);
+    logAudit(
+      req.auth!.userId,
+      req.auth!.email,
+      'UPDATE_ORDER_STATUS',
+      'order',
+      id,
+      `Pedido ${current.order_number}: ${current.status} -> ${status}`
+    );
+  })();
+
+  broadcastEvent('catalog_updated', {reason: 'order_status_changed'});
+  broadcastEvent('order_updated', {orderId: id, status});
+  res.json({message: 'Status do pedido atualizado.'});
+});
+
+// Admin Customers (masked CPF for LGPD privacy)
+app.get('/api/admin/customers', requireAdminPermission('manage_customers'), (_req: AuthedRequest, res: Response) => {
+  const customers = db
+    .prepare(`
+      SELECT u.id, u.full_name, u.cpf, u.email, u.phone, u.created_at,
+        COUNT(o.id) AS orders_count,
+        COALESCE(SUM(CASE WHEN o.status != 'cancelado' THEN o.total_cents ELSE 0 END), 0) AS total_spent_cents
+      FROM users u
+      LEFT JOIN orders o ON o.user_id = u.id
+      WHERE u.role = 'customer' AND u.active = 1
+      GROUP BY u.id
+      ORDER BY u.id DESC
+    `)
+    .all() as {
+      id: number;
+      full_name: string;
+      cpf: string | null;
+      email: string;
+      phone: string;
+      created_at: string;
+      orders_count: number;
+      total_spent_cents: number;
+    }[];
+
+  res.json({
+    customers: customers.map((c) => ({
+      id: c.id,
+      full_name: c.full_name,
+      cpf_masked: c.cpf ? maskCpf(c.cpf) : '***.***.***-**',
+      email: c.email,
+      phone: c.phone,
+      created_at: c.created_at,
+      orders_count: c.orders_count,
+      total_spent_cents: c.total_spent_cents,
+    })),
+  });
+});
+
+// Admin Banners
+app.get('/api/admin/banners', requireAdminPermission('manage_banners'), (_req: AuthedRequest, res: Response) => {
+  const banners = db.prepare('SELECT * FROM banners ORDER BY sort_order ASC, id ASC').all();
+  res.json({banners});
+});
+
+app.post('/api/admin/banners', requireAdminPermission('manage_banners'), (req: AuthedRequest, res: Response) => {
+  const b = req.body || {};
+  const title = sanitizeText(b.title, 120);
+  const subtitle = sanitizeText(b.subtitle, 300);
+  const ctaText = sanitizeText(b.ctaText || 'Explorar Coleção', 40);
+  const ctaCategory = sanitizeText(b.ctaCategory || 'all', 40);
+  const imageUrl = isSafeImageUrl(b.imageUrl)
+    ? String(b.imageUrl).trim()
+    : '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg';
+
+  if (!title || !subtitle) {
+    res.status(400).json({error: 'Informe título e subtítulo do banner.'});
+    return;
+  }
+
+  const info = db
+    .prepare('INSERT INTO banners (title, subtitle, cta_text, cta_category, image_url, active, sort_order) VALUES (?, ?, ?, ?, ?, 1, 1)')
+    .run(title, subtitle, ctaText, ctaCategory, imageUrl);
+  logAudit(req.auth!.userId, req.auth!.email, 'CREATE_BANNER', 'banner', Number(info.lastInsertRowid), title);
+  broadcastEvent('banner_updated', {reason: 'banner_created'});
+  res.status(201).json({id: Number(info.lastInsertRowid)});
+});
+
+app.put('/api/admin/banners/:id', requireAdminPermission('manage_banners'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const b = req.body || {};
+  const title = sanitizeText(b.title, 120);
+  const subtitle = sanitizeText(b.subtitle, 300);
+  const ctaText = sanitizeText(b.ctaText || 'Explorar Coleção', 40);
+  const ctaCategory = sanitizeText(b.ctaCategory || 'all', 40);
+  const active = b.active === false ? 0 : 1;
+  const imageUrl = isSafeImageUrl(b.imageUrl)
+    ? String(b.imageUrl).trim()
+    : '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg';
+
+  if (!title || !subtitle) {
+    res.status(400).json({error: 'Título e subtítulo obrigatórios.'});
+    return;
+  }
+  db.prepare('UPDATE banners SET title = ?, subtitle = ?, cta_text = ?, cta_category = ?, image_url = ?, active = ? WHERE id = ?').run(
+    title,
+    subtitle,
+    ctaText,
+    ctaCategory,
+    imageUrl,
+    active,
+    id
+  );
+  logAudit(req.auth!.userId, req.auth!.email, 'UPDATE_BANNER', 'banner', id, title);
+  broadcastEvent('banner_updated', {reason: 'banner_updated'});
+  res.json({message: 'Banner atualizado.'});
+});
+
+app.delete('/api/admin/banners/:id', requireAdminPermission('manage_banners'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  db.prepare('DELETE FROM banners WHERE id = ?').run(id);
+  logAudit(req.auth!.userId, req.auth!.email, 'DELETE_BANNER', 'banner', id, 'Banner excluído');
+  broadcastEvent('banner_updated', {reason: 'banner_deleted'});
+  res.json({message: 'Banner removido.'});
+});
+
+// Admin Staff / Permissions
+app.get('/api/admin/staff', requireAdminPermission('manage_staff'), (_req: AuthedRequest, res: Response) => {
+  const staff = db
+    .prepare("SELECT id, role, permissions_json, full_name, email, active, created_at FROM users WHERE role IN ('admin', 'staff') ORDER BY id ASC")
+    .all() as {id: number; role: string; permissions_json: string; full_name: string; email: string; active: number; created_at: string}[];
+  res.json({
+    staff: staff.map((s) => ({
+      ...s,
+      active: Boolean(s.active),
+      permissions: JSON.parse(s.permissions_json || '[]'),
+    })),
+  });
+});
+
+app.post('/api/admin/staff', requireAdminPermission('manage_staff'), (req: AuthedRequest, res: Response) => {
+  const fullName = sanitizeText(req.body?.fullName, 120);
+  const email = sanitizeText(req.body?.email, 140).toLowerCase();
+  const password = String(req.body?.password || '');
+  const permissions = Array.isArray(req.body?.permissions)
+    ? req.body.permissions.filter((p: unknown) => typeof p === 'string')
+    : ['manage_products', 'manage_orders'];
+
+  if (fullName.length < 2 || !isValidEmail(email) || password.length < 6) {
+    res.status(400).json({error: 'Informe nome, e-mail válido e senha com no mínimo 6 caracteres.'});
+    return;
+  }
+
+  const exists = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+  if (exists) {
+    res.status(409).json({error: 'Este e-mail já está em uso.'});
+    return;
+  }
+
+  const info = db
+    .prepare(`
+      INSERT INTO users (role, permissions_json, full_name, email, password_hash, lgpd_consent, lgpd_consent_at)
+      VALUES ('staff', ?, ?, ?, ?, 1, datetime('now'))
+    `)
+    .run(JSON.stringify(permissions), fullName, email, hashPassword(password));
+
+  logAudit(req.auth!.userId, req.auth!.email, 'CREATE_STAFF', 'user', Number(info.lastInsertRowid), `Colaboradora: ${email}`);
+  res.status(201).json({id: Number(info.lastInsertRowid), message: 'Colaborador cadastrado com permissões definidas.'});
+});
+
+app.patch('/api/admin/staff/:id', requireAdminPermission('manage_staff'), (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const target = db.prepare('SELECT id, role, email FROM users WHERE id = ?').get(id) as {
+    id: number;
+    role: string;
+    email: string;
+  } | undefined;
+  if (!target || target.role === 'admin') {
+    res.status(400).json({error: 'Não é possível alterar permissões do administrador principal por esta ação.'});
+    return;
+  }
+
+  const permissions = Array.isArray(req.body?.permissions)
+    ? req.body.permissions.filter((p: unknown) => typeof p === 'string')
+    : [];
+  const active = req.body?.active === false ? 0 : 1;
+
+  db.prepare("UPDATE users SET permissions_json = ?, active = ?, updated_at = datetime('now') WHERE id = ?").run(
+    JSON.stringify(permissions),
+    active,
+    id
+  );
+  logAudit(req.auth!.userId, req.auth!.email, 'UPDATE_STAFF', 'user', id, `${target.email} ativo=${active}`);
+  res.json({message: 'Permissões atualizadas.'});
+});
+
+// Vite / Static Frontend Serving
+async function startServer() {
+  const isProd = process.env.NODE_ENV === 'production';
+  if (!isProd) {
+    const vite = await createViteServer({
+      server: {middlewareMode: true},
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.resolve(process.cwd(), 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req: Request, res: Response) => {
+      res.sendFile(path.join(distDir, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Suzy Bely server running at http://localhost:${PORT}`);
+  });
+}
+
+startServer();
