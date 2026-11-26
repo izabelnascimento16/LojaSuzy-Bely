@@ -18,6 +18,18 @@ export function getAdminToken(): string | null {
   return adminTokenMemory;
 }
 
+export class ApiError extends Error {
+  status: number;
+  data: Record<string, unknown>;
+
+  constructor(message: string, status: number, data: Record<string, unknown>) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
 export async function apiRequest<T>(
   path: string,
   options: {
@@ -46,9 +58,35 @@ export async function apiRequest<T>(
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
 
-  const data = (await response.json().catch(() => ({}))) as T & {error?: string};
+  const data = (await response.json().catch(() => ({}))) as T & Record<string, unknown> & {error?: string};
   if (!response.ok) {
-    throw new Error(data.error || 'Ocorreu um erro ao processar a solicitação.');
+    throw new ApiError(data.error || 'Ocorreu um erro ao processar a solicitação.', response.status, data);
+  }
+  return data;
+}
+
+export async function uploadFilesRequest<T>(
+  path: string,
+  formData: FormData,
+  useAdminToken = true
+): Promise<T> {
+  const token = useAdminToken ? adminTokenMemory : authTokenMemory;
+  const headers: Record<string, string> = {
+    'X-Requested-With': 'SuzyBelyStore',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: formData,
+  });
+
+  const data = (await response.json().catch(() => ({}))) as T & Record<string, unknown> & {error?: string};
+  if (!response.ok) {
+    throw new ApiError(data.error || 'Erro ao enviar os ficheiros.', response.status, data);
   }
   return data;
 }

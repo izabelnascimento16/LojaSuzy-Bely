@@ -48,6 +48,42 @@ export function formatPhoneInput(value: string): string {
   return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7, 11)}`;
 }
 
+export type SupportedPhoneCountry = 'BR' | 'PT';
+
+export function detectPhoneCountry(value?: string | null): SupportedPhoneCountry {
+  const raw = String(value || '').trim();
+  const digits = onlyDigits(raw);
+  if (raw.startsWith('+351') || (digits.startsWith('351') && digits.length === 12)) {
+    return 'PT';
+  }
+  return 'BR';
+}
+
+export function extractLocalPhoneDigits(value: string, country: SupportedPhoneCountry): string {
+  let digits = onlyDigits(value);
+  if (country === 'PT') {
+    if (digits.startsWith('351') && digits.length > 9) digits = digits.slice(3);
+    return digits.slice(0, 9);
+  }
+  if (digits.startsWith('55') && digits.length >= 12) digits = digits.slice(2);
+  return digits.slice(0, 11);
+}
+
+export function formatInternationalPhoneInput(value: string, country: SupportedPhoneCountry): string {
+  const local = extractLocalPhoneDigits(value, country);
+  if (country === 'PT') {
+    if (local.length <= 3) return local;
+    if (local.length <= 6) return `${local.slice(0, 3)} ${local.slice(3)}`;
+    return `${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6, 9)}`;
+  }
+  return formatPhoneInput(local);
+}
+
+export function isValidInternationalPhoneClient(value: string, country: SupportedPhoneCountry): boolean {
+  const local = extractLocalPhoneDigits(value, country);
+  return country === 'PT' ? local.length === 9 : local.length === 10 || local.length === 11;
+}
+
 export function effectivePriceCents(priceCents: number, promoPriceCents: number | null): number {
   if (promoPriceCents !== null && promoPriceCents > 0 && promoPriceCents < priceCents) {
     return promoPriceCents;
@@ -74,3 +110,32 @@ export const PAYMENT_METHOD_LABELS: Record<string, string> = {
   credit_card: 'Cartão de Crédito',
   boleto: 'Boleto Bancário',
 };
+
+export function normalizeWhatsAppDigits(rawPhone?: string | null): string {
+  const digits = onlyDigits(String(rawPhone || ''));
+  if (digits.length < 10) return '';
+  if (digits.length === 10 || digits.length === 11) return `55${digits}`;
+  return digits;
+}
+
+export function buildWhatsAppUrl(rawPhone?: string | null, customMessage?: string | null): string {
+  const fullDigits = normalizeWhatsAppDigits(rawPhone);
+  if (!fullDigits) return '';
+  const base = `https://wa.me/${fullDigits}`;
+  const text = (customMessage || '').trim();
+  return text ? `${base}?text=${encodeURIComponent(text)}` : base;
+}
+
+export function formatWhatsAppDisplay(rawPhone?: string | null): string {
+  const digits = onlyDigits(String(rawPhone || ''));
+  if (digits.length < 10) return '';
+  const local = digits.startsWith('55') && digits.length >= 12 ? digits.slice(2) : digits;
+  if (local.length === 11) {
+    return `(${local.slice(0, 2)}) ${local.slice(2, 7)}-${local.slice(7, 11)}`;
+  }
+  if (local.length === 10) {
+    return `(${local.slice(0, 2)}) ${local.slice(2, 6)}-${local.slice(6, 10)}`;
+  }
+  return `+${digits}`;
+}
+

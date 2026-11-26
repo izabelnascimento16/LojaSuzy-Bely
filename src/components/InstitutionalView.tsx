@@ -1,14 +1,20 @@
-import {CheckCircle2, Lock, RefreshCw, ShieldCheck, Truck} from 'lucide-react';
-import type {InstitutionalTab} from '../types';
+import {CheckCircle2, ExternalLink, Lock, Mail, MessageCircle, RefreshCw, ShieldCheck, Truck} from 'lucide-react';
+import type {InstitutionalTab, PublicStoreSettings} from '../types';
+import {buildWhatsAppUrl, formatBRL, formatWhatsAppDisplay} from '../utils/format';
 import {ResilientImage} from './BrandLogo';
 
 interface InstitutionalViewProps {
   activeTab: InstitutionalTab;
+  storeSettings?: PublicStoreSettings | null;
   onChangeTab: (tab: InstitutionalTab) => void;
   onExploreCatalog: () => void;
 }
 
-export function InstitutionalView({activeTab, onChangeTab, onExploreCatalog}: InstitutionalViewProps) {
+export function InstitutionalView({activeTab, storeSettings, onChangeTab, onExploreCatalog}: InstitutionalViewProps) {
+  const whatsappUrl = buildWhatsAppUrl(storeSettings?.whatsappNumber, storeSettings?.whatsappMessage);
+  const whatsappDisplay = formatWhatsAppDisplay(storeSettings?.whatsappNumber);
+  const contactEmail = storeSettings?.contactEmail || 'atendimento@suzybely.com.br';
+  const storeCity = storeSettings?.storeCity || 'Ji-Paraná, RO';
   const tabs: {id: InstitutionalTab; label: string}[] = [
     {id: 'sobre', label: 'Missão, Visão e Valores'},
     {id: 'privacidade', label: 'Privacidade (LGPD)'},
@@ -154,10 +160,17 @@ export function InstitutionalView({activeTab, onChangeTab, onExploreCatalog}: In
             <h2 className="font-display text-2xl font-semibold">Política de Entrega</h2>
           </div>
           <p>
-            Enviamos para todo o Brasil via <strong>Correios (PAC e SEDEX)</strong>. O prazo e o valor do frete são calculados automaticamente pelo CEP no carrinho e no checkout.
+            Enviamos para todo o Brasil via <strong>Correios (PAC e SEDEX)</strong>, além de{' '}
+            <strong>entrega local ou retirada em {storeCity}</strong>. O prazo e o valor do frete são calculados automaticamente pelo CEP no carrinho e no checkout.
           </p>
           <p>
-            Compras a partir de <strong>R$ 150,00</strong> contam com <strong>Frete Grátis na modalidade PAC</strong> para todas as regiões. Após a confirmação do pagamento, o pedido é separado em até 1 dia útil e você recebe o código de rastreio na Área do Cliente.
+            {storeSettings?.freeShippingThresholdCents && storeSettings.freeShippingThresholdCents > 0 ? (
+              <>
+                Compras a partir de <strong>{formatBRL(storeSettings.freeShippingThresholdCents)}</strong> contam com{' '}
+                <strong>Frete Grátis na modalidade PAC</strong> para todas as regiões.{' '}
+              </>
+            ) : null}
+            Após a confirmação do pagamento, o pedido é separado em até 1 dia útil e você recebe o código de rastreio na Área do Cliente.
           </p>
         </div>
       )}
@@ -176,6 +189,45 @@ export function InstitutionalView({activeTab, onChangeTab, onExploreCatalog}: In
           </p>
         </div>
       )}
+
+      {/* Canal Oficial de Atendimento WhatsApp */}
+      <div className="bg-gradient-to-br from-[#FFF9F4] to-[#FFE8D4]/70 border border-[#FDBA74]/70 rounded-2xl p-6 sm:p-8 flex flex-col md:flex-row md:items-center justify-between gap-5">
+        <div className="space-y-1.5">
+          <p className="text-xs font-bold uppercase tracking-wider text-[#EA580C]">Atendimento no WhatsApp</p>
+          <h2 className="font-display text-xl sm:text-2xl font-semibold text-[#3D2113]">
+            Fale com um Especialista
+          </h2>
+          <p className="text-sm text-[#5E3824]">
+            Atendimento consultivo para agendamentos de visitas, avaliações e propostas.
+          </p>
+          <p className="text-xs text-[#7A4D35]">
+            {storeCity} · {contactEmail}
+            {whatsappDisplay ? ` · WhatsApp ${whatsappDisplay}` : ''}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          {whatsappUrl ? (
+            <a
+              href={whatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 transition-colors min-h-[44px]"
+            >
+              <MessageCircle className="w-4 h-4" />
+              <span>Atendimento no WhatsApp</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+          ) : (
+            <a
+              href={`mailto:${contactEmail}`}
+              className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] transition-colors min-h-[44px]"
+            >
+              <Mail className="w-4 h-4" />
+              <span>Enviar E-mail</span>
+            </a>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

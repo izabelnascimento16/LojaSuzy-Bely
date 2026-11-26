@@ -4,25 +4,30 @@ import {
   CheckCircle2,
   LogOut,
   MapPin,
+  MessageCircle,
   Package,
   Plus,
   Trash2,
   User as UserIcon,
 } from 'lucide-react';
-import type {Address, Order, User} from '../types';
+import type {Address, Order, PublicStoreSettings, User} from '../types';
 import {apiRequest, setCustomerToken} from '../services/api';
 import {
+  buildWhatsAppUrl,
+  detectPhoneCountry,
   formatBRL,
   formatCepInput,
-  formatPhoneInput,
+  formatInternationalPhoneInput,
   onlyDigits,
   ORDER_STATUS_LABELS,
   PAYMENT_METHOD_LABELS,
+  type SupportedPhoneCountry,
 } from '../utils/format';
 
 interface CustomerAreaViewProps {
   user: User;
   addresses: Address[];
+  storeSettings?: PublicStoreSettings | null;
   onUpdateUser: (user: User) => void;
   onUpdateAddresses: (addresses: Address[]) => void;
   onLogout: () => void;
@@ -31,10 +36,15 @@ interface CustomerAreaViewProps {
 export function CustomerAreaView({
   user,
   addresses,
+  storeSettings,
   onUpdateUser,
   onUpdateAddresses,
   onLogout,
 }: CustomerAreaViewProps) {
+  const generalWhatsappUrl = buildWhatsAppUrl(
+    storeSettings?.whatsappNumber,
+    `Olá Suzy Bely! Aqui é ${user.fullName}. Gostaria de falar com o atendimento.`
+  );
   const [activeTab, setActiveTab] = useState<'orders' | 'profile' | 'addresses'>('orders');
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
@@ -42,8 +52,10 @@ export function CustomerAreaView({
   const [error, setError] = useState('');
 
   // Profile edit
+  const initialCountry = detectPhoneCountry(user.phone);
   const [fullName, setFullName] = useState(user.fullName);
-  const [phone, setPhone] = useState(formatPhoneInput(user.phone || ''));
+  const [phoneCountry, setPhoneCountry] = useState<SupportedPhoneCountry>(initialCountry);
+  const [phone, setPhone] = useState(formatInternationalPhoneInput(user.phone || '', initialCountry));
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
   // New Address
@@ -80,7 +92,7 @@ export function CustomerAreaView({
     try {
       const res = await apiRequest<{message: string; fullName: string; phone: string}>('/api/account/profile', {
         method: 'PUT',
-        body: {fullName, phone},
+        body: {fullName, phone, phoneCountry},
       });
       onUpdateUser({...user, fullName: res.fullName, phone: res.phone});
       setFeedback(res.message);
@@ -173,14 +185,27 @@ export function CustomerAreaView({
             {user.email} · CPF {user.cpfMasked || '***.***.***-**'}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onLogout}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#F2D2B6] bg-white text-sm font-medium text-[#3D2113] hover:bg-[#FFE8D4] w-fit cursor-pointer"
-        >
-          <LogOut className="w-4 h-4" />
-          <span>Sair da Conta</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {generalWhatsappUrl && (
+            <a
+              href={generalWhatsappUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 w-fit"
+            >
+              <MessageCircle className="w-4 h-4" />
+              <span>Atendimento WhatsApp</span>
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={onLogout}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[#F2D2B6] bg-white text-sm font-medium text-[#3D2113] hover:bg-[#FFE8D4] w-fit cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sair da Conta</span>
+          </button>
+        </div>
       </div>
 
       {/* Navigation Tabs */}
@@ -300,15 +325,34 @@ export function CustomerAreaView({
                       </span>
                     )}
                   </div>
-                  {['aguardando_pagamento', 'pago', 'em_separacao'].includes(order.status) && (
-                    <button
-                      type="button"
-                      onClick={() => handleCancelOrder(order.id)}
-                      className="px-3.5 py-2 rounded-lg border border-[#EA580C]/40 text-[#EA580C] font-semibold hover:bg-[#EA580C]/10 min-h-[42px] cursor-pointer"
-                    >
-                      Solicitar Cancelamento
-                    </button>
-                  )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(() => {
+                      const orderWaUrl = buildWhatsAppUrl(
+                        storeSettings?.whatsappNumber,
+                        `Olá Suzy Bely! Gostaria de informações sobre meu pedido ${order.order_number}.`
+                      );
+                      return orderWaUrl ? (
+                        <a
+                          href={orderWaUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-emerald-700/40 bg-emerald-50 text-emerald-900 font-semibold hover:bg-emerald-100 min-h-[42px]"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>WhatsApp sobre o pedido</span>
+                        </a>
+                      ) : null;
+                    })()}
+                    {['aguardando_pagamento', 'pago', 'em_separacao'].includes(order.status) && (
+                      <button
+                        type="button"
+                        onClick={() => handleCancelOrder(order.id)}
+                        className="px-3.5 py-2 rounded-lg border border-[#EA580C]/40 text-[#EA580C] font-semibold hover:bg-[#EA580C]/10 min-h-[42px] cursor-pointer"
+                      >
+                        Solicitar Cancelamento
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))
@@ -335,14 +379,31 @@ export function CustomerAreaView({
               />
             </div>
             <div>
-              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Celular com DDD</label>
-              <input
-                type="tel"
-                required
-                value={phone}
-                onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm font-mono"
-              />
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Telemóvel / Celular</label>
+              <div className="flex gap-2">
+                <select
+                  value={phoneCountry}
+                  onChange={(e) => {
+                    const nextCountry = e.target.value === 'PT' ? 'PT' : 'BR';
+                    setPhoneCountry(nextCountry);
+                    setPhone(formatInternationalPhoneInput(phone, nextCountry));
+                  }}
+                  aria-label="Código do país"
+                  className="bg-white border border-[#F2D2B6] rounded-lg px-2.5 py-2.5 text-sm font-mono shrink-0"
+                >
+                  <option value="BR">🇧🇷 +55</option>
+                  <option value="PT">🇵🇹 +351</option>
+                </select>
+                <input
+                  type="tel"
+                  required
+                  value={phone}
+                  onChange={(e) => setPhone(formatInternationalPhoneInput(e.target.value, phoneCountry))}
+                  placeholder={phoneCountry === 'PT' ? '912 345 678' : '(69) 99999-9999'}
+                  maxLength={phoneCountry === 'PT' ? 11 : 15}
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm font-mono"
+                />
+              </div>
             </div>
             <div>
               <label className="block text-xs font-semibold text-[#9A6B50] mb-1">CPF (protegido pela LGPD)</label>

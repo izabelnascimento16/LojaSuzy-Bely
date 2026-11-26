@@ -67,7 +67,7 @@ export function CartDrawer({
 
   const shippingCents = selectedShipping ? selectedShipping.priceCents : 0;
   const totalCents = subtotalCents + shippingCents;
-  const freeThreshold = storeSettings?.freeShippingThresholdCents ?? 15000;
+  const freeThreshold = storeSettings?.freeShippingThresholdCents ?? 0;
   const missingForFreeFreight = freeThreshold > 0 ? Math.max(0, freeThreshold - subtotalCents) : 0;
 
   return (

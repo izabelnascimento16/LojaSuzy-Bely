@@ -52,9 +52,69 @@ export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim());
 }
 
-export function isValidPhone(phoneRaw: string): boolean {
-  const d = onlyDigits(phoneRaw);
-  return d.length === 10 || d.length === 11;
+export interface NormalizedPhone {
+  valid: boolean;
+  country: 'BR' | 'PT';
+  dialCode: '55' | '351';
+  localDigits: string;
+  e164: string;
+  display: string;
+}
+
+export function normalizeInternationalPhone(
+  phoneRaw: string,
+  preferredCountry?: 'BR' | 'PT' | '+55' | '+351'
+): NormalizedPhone {
+  const digits = onlyDigits(phoneRaw);
+  const preferPT = preferredCountry === 'PT' || preferredCountry === '+351';
+
+  // Explicit +351 Portugal or PT selected with 9 digits
+  if (digits.startsWith('351') && digits.length === 12) {
+    const local = digits.slice(3);
+    const valid = /^[239]\d{8}$/.test(local);
+    return {
+      valid,
+      country: 'PT',
+      dialCode: '351',
+      localDigits: local,
+      e164: `+351${local}`,
+      display: `+351 ${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6, 9)}`,
+    };
+  }
+
+  if (preferPT) {
+    const local = digits.startsWith('351') ? digits.slice(3) : digits;
+    const valid = /^[239]\d{8}$/.test(local);
+    return {
+      valid,
+      country: 'PT',
+      dialCode: '351',
+      localDigits: local,
+      e164: `+351${local}`,
+      display: local.length === 9 ? `+351 ${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6, 9)}` : phoneRaw,
+    };
+  }
+
+  // Explicit +55 Brazil or local BR (10 or 11 digits)
+  const brLocal = digits.startsWith('55') && (digits.length === 12 || digits.length === 13) ? digits.slice(2) : digits;
+  const brValid = brLocal.length === 10 || brLocal.length === 11;
+  return {
+    valid: brValid,
+    country: 'BR',
+    dialCode: '55',
+    localDigits: brLocal,
+    e164: `+55${brLocal}`,
+    display:
+      brLocal.length === 11
+        ? `+55 (${brLocal.slice(0, 2)}) ${brLocal.slice(2, 7)}-${brLocal.slice(7, 11)}`
+        : brLocal.length === 10
+          ? `+55 (${brLocal.slice(0, 2)}) ${brLocal.slice(2, 6)}-${brLocal.slice(6, 10)}`
+          : phoneRaw,
+  };
+}
+
+export function isValidPhone(phoneRaw: string, preferredCountry?: 'BR' | 'PT' | '+55' | '+351'): boolean {
+  return normalizeInternationalPhone(phoneRaw, preferredCountry).valid;
 }
 
 export interface FreightConfig {
@@ -78,7 +138,7 @@ export function calculateFreightByCep(
   regionLabel: string;
 } {
   const firstDigit = Number(cepDigits[0] || '0');
-  const threshold = config?.freeShippingThresholdCents ?? 15000;
+  const threshold = config?.freeShippingThresholdCents ?? 0;
   const freeEligible = threshold > 0 && subtotalCents >= threshold;
   const extraDays = Math.max(0, config?.shippingExtraDays ?? 0);
 

@@ -15,6 +15,13 @@ export function ProductCard({product, onSelect, onAddToCart}: ProductCardProps) 
   const primaryImage = product.images[0]?.url || '';
   const outOfStock = product.stock <= 0;
 
+  const attrEntries = Object.entries(product.attributes || {});
+  const subtitleParts = [
+    product.brand,
+    product.color,
+    attrEntries[0] ? `${attrEntries[0][0]}: ${attrEntries[0][1]}` : '',
+  ].filter((part, idx, arr) => Boolean(part) && arr.indexOf(part) === idx);
+
   return (
     <article className="group bg-[#FFFFFF] border border-[#FDBA74]/60 hover:border-[#EA580C]/70 rounded-xl overflow-hidden flex flex-col transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#EA580C]/15">
       <button
@@ -40,7 +47,10 @@ export function ProductCard({product, onSelect, onAddToCart}: ProductCardProps) 
         <div>
           {/* Unboxed clean metadata with typographic separator */}
           <div className="flex items-center gap-1.5 text-[11px] sm:text-xs text-[#9A6B50] mb-1">
-            <span className="truncate">{product.category_name}</span>
+            <span className="truncate">
+              {product.category_name}
+              {product.subcategory_name ? ` · ${product.subcategory_name}` : ''}
+            </span>
             {discount > 0 && (
               <>
                 <span aria-hidden="true">·</span>
@@ -63,7 +73,11 @@ export function ProductCard({product, onSelect, onAddToCart}: ProductCardProps) 
             {product.name}
           </button>
 
-          <p className="mt-1 text-[11px] sm:text-xs text-[#7A4D35] line-clamp-1">{product.color}</p>
+          {subtitleParts.length > 0 && (
+            <p className="mt-1 text-[11px] sm:text-xs text-[#7A4D35] line-clamp-1">
+              {subtitleParts.slice(0, 2).join(' · ')}
+            </p>
+          )}
         </div>
 
         <div className="pt-2.5 border-t border-[#FFE8D4] flex flex-col sm:flex-row sm:items-end justify-between gap-2.5 sm:gap-3">

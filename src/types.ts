@@ -1,16 +1,36 @@
+export interface Subcategory {
+  id: number;
+  category_id: number;
+  name: string;
+  slug: string;
+  description: string;
+  active: boolean;
+  sort_order: number;
+  product_count?: number;
+}
+
 export interface Category {
   id: number;
   name: string;
   slug: string;
   description: string;
+  image_url: string;
+  active: boolean;
   sort_order: number;
+  product_count?: number;
+  subcategories?: Subcategory[];
 }
 
 export interface ProductImage {
   id: number;
+  produto_id?: number;
   url: string;
+  imagem?: string;
   alt: string;
+  principal?: boolean;
+  ordem?: number;
   sort_order: number;
+  criado_em?: string;
 }
 
 export interface Product {
@@ -18,12 +38,18 @@ export interface Product {
   category_id: number;
   category_name: string;
   category_slug: string;
+  subcategory_id: number | null;
+  subcategory_name: string | null;
+  subcategory_slug: string | null;
   name: string;
   slug: string;
+  brand: string;
+  sku: string;
   description: string;
   material: string;
   color: string;
   dimensions: string;
+  attributes: Record<string, string>;
   price_cents: number;
   promo_price_cents: number | null;
   stock: number;
@@ -88,6 +114,8 @@ export interface User {
   email: string;
   phone: string;
   permissions: string[];
+  accountVerified?: boolean;
+  verificationChannel?: 'email' | 'sms';
   createdAt?: string;
 }
 
@@ -115,8 +143,10 @@ export interface PublicStoreSettings {
   localDeliveryPriceCents: number;
   localDeliveryDays: number;
   whatsappNumber: string;
+  whatsappMessage: string;
   contactEmail: string;
   storeCity: string;
+  smsConfigured?: boolean;
 }
 
 export interface EmailLog {
@@ -150,6 +180,7 @@ export interface AdminStoreSettings {
   localDeliveryPriceCents: number;
   localDeliveryDays: number;
   whatsappNumber: string;
+  whatsappMessage: string;
   contactEmail: string;
   storeCity: string;
   emailSenderName: string;
@@ -167,6 +198,10 @@ export interface AdminStoreSettings {
     userConfigured: boolean;
     fromAddress: string;
     port: number;
+  };
+  smsStatus?: {
+    configured: boolean;
+    provider: 'twilio' | 'webhook' | 'none';
   };
 }
 

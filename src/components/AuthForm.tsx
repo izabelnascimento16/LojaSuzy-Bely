@@ -1,8 +1,16 @@
-import {useState} from 'react';
-import {AlertCircle, CheckCircle2, Loader2, Lock, Search} from 'lucide-react';
+import {useEffect, useState} from 'react';
+import {AlertCircle, CheckCircle2, Clock, Loader2, Lock, Mail, MessageSquare, RefreshCw, Search, ShieldCheck} from 'lucide-react';
 import type {Address, User} from '../types';
-import {apiRequest, setCustomerToken} from '../services/api';
-import {formatCepInput, formatCpfInput, formatPhoneInput, isValidCpfClient, onlyDigits} from '../utils/format';
+import {ApiError, apiRequest, setCustomerToken} from '../services/api';
+import {
+  formatCepInput,
+  formatCpfInput,
+  formatInternationalPhoneInput,
+  isValidCpfClient,
+  isValidInternationalPhoneClient,
+  onlyDigits,
+  type SupportedPhoneCountry,
+} from '../utils/format';
 
 interface AuthFormProps {
   onSuccess: (user: User, addresses: Address[]) => void;
@@ -14,8 +22,15 @@ const UFS = [
   'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC', 'SP', 'SE', 'TO',
 ];
 
+function formatCountdown(seconds: number): string {
+  const s = Math.max(0, seconds);
+  const mins = Math.floor(s / 60);
+  const secs = s % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
 export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
+  const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'verify'>(initialMode);
   const [loading, setLoading] = useState(false);
   const [cepLoading, setCepLoading] = useState(false);
   const [error, setError] = useState('');
@@ -33,10 +48,24 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [resetStep, setResetStep] = useState<'request' | 'verify'>('request');
 
-  // Register fields (Brazilian standard)
+  // Account verification step fields
+  const [pendingEmail, setPendingEmail] = useState('');
+  const [verifyChannel, setVerifyChannel] = useState<'email' | 'sms'>('email');
+  const [maskedTarget, setMaskedTarget] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [previewVerifyCode, setPreviewVerifyCode] = useState('');
+  const [expiresInSeconds, setExpiresInSeconds] = useState(300);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+  const [showSmsFallback, setShowSmsFallback] = useState(false);
+  const [smsPhoneCountry, setSmsPhoneCountry] = useState<SupportedPhoneCountry>('BR');
+  const [smsPhone, setSmsPhone] = useState('');
+  const [resending, setResending] = useState(false);
+
+  // Register fields
   const [fullName, setFullName] = useState('');
   const [cpf, setCpf] = useState('');
   const [email, setEmail] = useState('');
+  const [phoneCountry, setPhoneCountry] = useState<SupportedPhoneCountry>('BR');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -46,8 +75,17 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
   const [complement, setComplement] = useState('');
   const [neighborhood, setNeighborhood] = useState('');
   const [city, setCity] = useState('');
-  const [state, setState] = useState('SP');
+  const [state, setState] = useState('RO');
   const [lgpdConsent, setLgpdConsent] = useState(false);
+
+  useEffect(() => {
+    if (mode !== 'verify') return;
+    const timer = window.setInterval(() => {
+      setExpiresInSeconds((prev) => (prev > 0 ? prev - 1 : 0));
+      setCooldownSeconds((prev) => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [mode]);
 
   const handleLookupCep = async (cepValue: string) => {
     const digits = onlyDigits(cepValue);
@@ -73,9 +111,33 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
     }
   };
 
+  const enterVerificationFlow = (params: {
+    emailAddress: string;
+    channel?: 'email' | 'sms';
+    masked?: string;
+    expires?: number;
+    retryAfter?: number;
+    previewCode?: string;
+    message?: string;
+  }) => {
+    setPendingEmail(params.emailAddress);
+    setVerifyChannel(params.channel === 'sms' ? 'sms' : 'email');
+    setMaskedTarget(params.masked || params.emailAddress);
+    setVerificationCode('');
+    setPreviewVerifyCode(params.previewCode || '');
+    setExpiresInSeconds(params.expires ?? 300);
+    setCooldownSeconds(params.retryAfter ?? 0);
+    setShowSmsFallback(false);
+    setSmsPhoneCountry(phoneCountry);
+    setSmsPhone(phone);
+    if (params.message) setSuccessMsg(params.message);
+    setMode('verify');
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessMsg('');
     setLoading(true);
     try {
       const res = await apiRequest<{token: string; user: User; addresses: Address[]}>('/api/auth/login', {
@@ -85,6 +147,18 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
       setCustomerToken(res.token);
       onSuccess(res.user, res.addresses);
     } catch (err) {
+      if (err instanceof ApiError && err.data.requiresVerification) {
+        setError('');
+        enterVerificationFlow({
+          emailAddress: String(err.data.email || loginEmail),
+          channel: err.data.channel === 'sms' ? 'sms' : 'email',
+          masked: String(err.data.maskedTarget || loginEmail),
+          expires: 300,
+          retryAfter: 0,
+          message: err.message,
+        });
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Falha ao entrar.');
     } finally {
       setLoading(false);
@@ -94,9 +168,18 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccessMsg('');
 
     if (!isValidCpfClient(cpf)) {
       setError('CPF inválido. Verifique os 11 dígitos informados.');
+      return;
+    }
+    if (!isValidInternationalPhoneClient(phone, phoneCountry)) {
+      setError(
+        phoneCountry === 'PT'
+          ? 'Telemóvel inválido. Informe 9 dígitos para Portugal (+351).'
+          : 'Celular inválido. Informe DDD + 10 ou 11 dígitos para o Brasil (+55).'
+      );
       return;
     }
     if (password.length < 6) {
@@ -114,13 +197,28 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
 
     setLoading(true);
     try {
-      const res = await apiRequest<{token: string; user: User; addresses: Address[]}>('/api/auth/register', {
+      // E-mail é o método principal e gratuito; nunca enviar SMS automaticamente no cadastro
+      const res = await apiRequest<{
+        requiresVerification?: boolean;
+        channel?: 'email' | 'sms';
+        email?: string;
+        maskedTarget?: string;
+        expiresInSeconds?: number;
+        retryAfterSeconds?: number;
+        previewCode?: string;
+        message?: string;
+        token?: string;
+        user?: User;
+        addresses?: Address[];
+      }>('/api/auth/register', {
         method: 'POST',
         body: {
           fullName,
           cpf,
           email,
           phone,
+          phoneCountry,
+          verificationChannel: 'email',
           password,
           confirmPassword,
           cep,
@@ -133,12 +231,117 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
           lgpdConsent,
         },
       });
-      setCustomerToken(res.token);
-      onSuccess(res.user, res.addresses);
+
+      if (res.requiresVerification) {
+        enterVerificationFlow({
+          emailAddress: res.email || email,
+          channel: res.channel || 'email',
+          masked: res.maskedTarget || email,
+          expires: res.expiresInSeconds ?? 300,
+          retryAfter: res.retryAfterSeconds ?? 60,
+          previewCode: res.previewCode,
+          message:
+            res.message ||
+            'Enviamos gratuitamente um código de 6 dígitos para o seu e-mail. Confirme para ativar a sua conta.',
+        });
+        return;
+      }
+
+      if (res.token && res.user) {
+        setCustomerToken(res.token);
+        onSuccess(res.user, res.addresses || []);
+      }
     } catch (err) {
+      if (err instanceof ApiError && err.data.requiresVerification) {
+        setError('');
+        enterVerificationFlow({
+          emailAddress: String(err.data.email || email),
+          channel: 'email',
+          masked: String(err.data.email || email),
+          expires: 300,
+          retryAfter: 0,
+          message: err.message,
+        });
+        return;
+      }
       setError(err instanceof Error ? err.message : 'Não foi possível concluir o cadastro.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleConfirmAccountCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const digits = onlyDigits(verificationCode).slice(0, 6);
+    if (digits.length !== 6) {
+      setError('Digite o código completo de 6 dígitos.');
+      return;
+    }
+    setError('');
+    setSuccessMsg('');
+    setLoading(true);
+    try {
+      const res = await apiRequest<{
+        token: string;
+        user: User;
+        addresses: Address[];
+        message: string;
+      }>('/api/auth/verify-account', {
+        method: 'POST',
+        body: {email: pendingEmail, code: digits},
+      });
+      setCustomerToken(res.token);
+      onSuccess(res.user, res.addresses || []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Código inválido ou expirado.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendCode = async (channel: 'email' | 'sms') => {
+    if (channel === 'sms' && !isValidInternationalPhoneClient(smsPhone, smsPhoneCountry)) {
+      setError(
+        smsPhoneCountry === 'PT'
+          ? 'Informe um número válido de Portugal (+351 com 9 dígitos) para receber por SMS.'
+          : 'Informe um número válido do Brasil (+55 com DDD) para receber por SMS.'
+      );
+      return;
+    }
+
+    setError('');
+    setSuccessMsg('');
+    setResending(true);
+    try {
+      const res = await apiRequest<{
+        channel: 'email' | 'sms';
+        maskedTarget: string;
+        expiresInSeconds: number;
+        retryAfterSeconds: number;
+        previewCode?: string;
+        message: string;
+      }>('/api/auth/resend-verification', {
+        method: 'POST',
+        body: {
+          email: pendingEmail,
+          channel,
+          ...(channel === 'sms' ? {phone: smsPhone, phoneCountry: smsPhoneCountry} : {}),
+        },
+      });
+      setVerifyChannel(res.channel);
+      setMaskedTarget(res.maskedTarget);
+      setExpiresInSeconds(res.expiresInSeconds ?? 300);
+      setCooldownSeconds(res.retryAfterSeconds ?? 60);
+      setPreviewVerifyCode(res.previewCode || '');
+      setVerificationCode('');
+      setSuccessMsg(res.message);
+    } catch (err) {
+      if (err instanceof ApiError && typeof err.data.retryAfterSeconds === 'number') {
+        setCooldownSeconds(err.data.retryAfterSeconds);
+      }
+      setError(err instanceof Error ? err.message : 'Não foi possível reenviar o código.');
+    } finally {
+      setResending(false);
     }
   };
 
@@ -191,34 +394,36 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
   return (
     <div className="space-y-5">
       {/* Segmented mode selector */}
-      <div className="flex items-center gap-1 p-1 bg-[#FFE8D4]/70 rounded-lg">
-        <button
-          type="button"
-          onClick={() => {
-            setMode('login');
-            setError('');
-            setSuccessMsg('');
-          }}
-          className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
-            mode === 'login' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
-          }`}
-        >
-          Já tenho conta
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setMode('register');
-            setError('');
-            setSuccessMsg('');
-          }}
-          className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
-            mode === 'register' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
-          }`}
-        >
-          Criar cadastro
-        </button>
-      </div>
+      {mode !== 'verify' && (
+        <div className="flex items-center gap-1 p-1 bg-[#FFE8D4]/70 rounded-lg">
+          <button
+            type="button"
+            onClick={() => {
+              setMode('login');
+              setError('');
+              setSuccessMsg('');
+            }}
+            className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
+              mode === 'login' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
+            }`}
+          >
+            Já tenho conta
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setMode('register');
+              setError('');
+              setSuccessMsg('');
+            }}
+            className={`flex-1 py-2.5 min-h-[42px] text-xs sm:text-sm font-semibold rounded-md transition-colors cursor-pointer ${
+              mode === 'register' ? 'bg-white text-[#3D2113] shadow-xs' : 'text-[#7A4D35] hover:text-[#3D2113]'
+            }`}
+          >
+            Criar cadastro
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="p-3.5 rounded-lg bg-[#EA580C]/10 border border-[#EA580C]/30 text-sm text-[#C94506] flex items-start gap-2.5">
@@ -231,6 +436,169 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
         <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 text-sm text-emerald-900 flex items-start gap-2.5">
           <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-700" />
           <span>{successMsg}</span>
+        </div>
+      )}
+
+      {mode === 'verify' && (
+        <div className="space-y-4">
+          <div className="p-4 rounded-xl bg-[#FFF9F4] border border-[#F2D2B6] space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-sm font-semibold text-[#3D2113]">
+                <ShieldCheck className="w-4 h-4 text-[#EA580C]" />
+                <span>Confirmar sua conta</span>
+              </div>
+              <span
+                className={`inline-flex items-center gap-1 text-xs font-mono font-semibold px-2.5 py-1 rounded-md ${
+                  expiresInSeconds > 0
+                    ? 'bg-white border border-[#F2D2B6] text-[#3D2113]'
+                    : 'bg-red-50 border border-red-200 text-red-700'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5 text-[#EA580C]" />
+                <span>{expiresInSeconds > 0 ? formatCountdown(expiresInSeconds) : 'Expirado'}</span>
+              </span>
+            </div>
+            <p className="text-xs text-[#5E3824] leading-relaxed">
+              {verifyChannel === 'email' ? (
+                <>
+                  Código de 6 dígitos enviado gratuitamente para{' '}
+                  <strong className="text-[#3D2113]">{maskedTarget}</strong>. O código expira em 5 minutos.
+                </>
+              ) : (
+                <>
+                  Código de 6 dígitos enviado via SMS para{' '}
+                  <strong className="text-[#3D2113]">{maskedTarget}</strong> (validade de 5 minutos).
+                </>
+              )}
+            </p>
+            {previewVerifyCode && (
+              <div className="p-2.5 rounded-lg bg-white border border-[#F2D2B6] text-xs text-[#5E3824]">
+                Código de confirmação (ambiente sem provedor externo configurado):{' '}
+                <strong className="font-mono text-sm tracking-widest text-[#EA580C]">{previewVerifyCode}</strong>
+              </div>
+            )}
+          </div>
+
+          <form onSubmit={handleConfirmAccountCode} className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1.5">
+                Código de verificação (6 dígitos)
+              </label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                required
+                maxLength={6}
+                value={verificationCode}
+                onChange={(e) => setVerificationCode(onlyDigits(e.target.value).slice(0, 6))}
+                placeholder="000000"
+                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-4 py-3 text-center text-xl font-mono font-bold tracking-[0.45em] text-[#3D2113] focus:outline-none focus:border-[#EA580C]"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading || onlyDigits(verificationCode).length !== 6}
+              className="w-full py-3 min-h-[46px] rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] disabled:opacity-55 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+              <span>Confirmar e Ativar Conta</span>
+            </button>
+          </form>
+
+          {/* Resend Email + Optional SMS Fallback */}
+          <div className="pt-3 border-t border-[#F2D2B6] space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button
+                type="button"
+                disabled={resending || cooldownSeconds > 0}
+                onClick={() => handleResendCode('email')}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-[#F2D2B6] bg-white text-xs font-semibold text-[#3D2113] hover:bg-[#FFE8D4] disabled:opacity-50 cursor-pointer"
+              >
+                {resending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5 text-[#EA580C]" />}
+                <span>
+                  {cooldownSeconds > 0
+                    ? `Reenviar por e-mail (${cooldownSeconds}s)`
+                    : 'Reenviar código por e-mail (gratuito)'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowSmsFallback((v) => !v)}
+                className="text-xs font-medium text-[#7A4D35] hover:text-[#EA580C] underline cursor-pointer"
+              >
+                {showSmsFallback ? 'Ocultar opção por SMS' : 'Não consigo usar o e-mail (usar SMS)'}
+              </button>
+            </div>
+
+            {showSmsFallback && (
+              <div className="p-4 rounded-xl bg-[#FFF9F4] border border-[#F2D2B6] space-y-3">
+                <div className="flex items-start gap-2 text-xs text-[#5E3824]">
+                  <MessageSquare className="w-4 h-4 text-[#EA580C] shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <div className="font-semibold text-[#3D2113]">Alternativa opcional por SMS</div>
+                    <p>
+                      A verificação por e-mail é gratuita. Caso prefira receber por SMS, o envio utiliza serviço externo e{' '}
+                      <strong>poderá ter custos operacionais</strong>. Suporte para Brasil (+55) e Portugal (+351).
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  <select
+                    value={smsPhoneCountry}
+                    onChange={(e) => {
+                      const nextCountry = e.target.value === 'PT' ? 'PT' : 'BR';
+                      setSmsPhoneCountry(nextCountry);
+                      setSmsPhone(formatInternationalPhoneInput(smsPhone, nextCountry));
+                    }}
+                    aria-label="País do número SMS"
+                    className="bg-white border border-[#F2D2B6] rounded-lg px-2.5 py-2 text-xs font-mono shrink-0"
+                  >
+                    <option value="BR">🇧🇷 +55</option>
+                    <option value="PT">🇵🇹 +351</option>
+                  </select>
+                  <input
+                    type="tel"
+                    inputMode="numeric"
+                    value={smsPhone}
+                    onChange={(e) => setSmsPhone(formatInternationalPhoneInput(e.target.value, smsPhoneCountry))}
+                    placeholder={smsPhoneCountry === 'PT' ? '912 345 678' : '(69) 99999-9999'}
+                    maxLength={smsPhoneCountry === 'PT' ? 11 : 15}
+                    className="flex-1 bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-xs font-mono focus:outline-none focus:border-[#EA580C]"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  disabled={resending || cooldownSeconds > 0}
+                  onClick={() => handleResendCode('sms')}
+                  className="w-full py-2.5 rounded-lg bg-[#3D2113] text-white text-xs font-semibold hover:bg-[#59311D] disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>
+                    {cooldownSeconds > 0
+                      ? `Aguarde ${cooldownSeconds}s para enviar por SMS`
+                      : 'Enviar código por SMS'}
+                  </span>
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                setMode('login');
+                setError('');
+                setSuccessMsg('');
+              }}
+              className="text-xs font-medium text-[#7A4D35] hover:text-[#3D2113] cursor-pointer"
+            >
+              Voltar para o login
+            </button>
+          </div>
         </div>
       )}
 
@@ -369,6 +737,13 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
 
       {mode === 'register' && (
         <form onSubmit={handleRegister} className="space-y-4">
+          <div className="p-3 rounded-lg bg-[#FFF9F4] border border-[#F2D2B6] text-xs text-[#5E3824] flex items-start gap-2">
+            <Mail className="w-4 h-4 text-[#EA580C] shrink-0 mt-0.5" />
+            <span>
+              <strong>Ativação gratuita por e-mail:</strong> após concluir o cadastro, enviaremos automaticamente um código de 6 dígitos para o seu e-mail (válido por 5 minutos). Caso precise, poderá optar por SMS na etapa seguinte.
+            </span>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
               <label className="block text-xs font-semibold text-[#3D2113] mb-1">Nome completo *</label>
@@ -397,21 +772,36 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Celular com DDD *</label>
-              <input
-                type="tel"
-                inputMode="numeric"
-                required
-                value={phone}
-                onChange={(e) => setPhone(formatPhoneInput(e.target.value))}
-                placeholder="(11) 99999-9999"
-                maxLength={15}
-                className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
-              />
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">Telemóvel / Celular (BR ou PT) *</label>
+              <div className="flex gap-1.5">
+                <select
+                  value={phoneCountry}
+                  onChange={(e) => {
+                    const nextCountry = e.target.value === 'PT' ? 'PT' : 'BR';
+                    setPhoneCountry(nextCountry);
+                    setPhone(formatInternationalPhoneInput(phone, nextCountry));
+                  }}
+                  aria-label="País do telefone"
+                  className="bg-white border border-[#F2D2B6] rounded-lg px-2 py-2 text-xs font-mono shrink-0 focus:outline-none focus:border-[#EA580C]"
+                >
+                  <option value="BR">🇧🇷 +55</option>
+                  <option value="PT">🇵🇹 +351</option>
+                </select>
+                <input
+                  type="tel"
+                  inputMode="numeric"
+                  required
+                  value={phone}
+                  onChange={(e) => setPhone(formatInternationalPhoneInput(e.target.value, phoneCountry))}
+                  placeholder={phoneCountry === 'PT' ? '912 345 678' : '(69) 99999-9999'}
+                  maxLength={phoneCountry === 'PT' ? 11 : 15}
+                  className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:border-[#EA580C]"
+                />
+              </div>
             </div>
 
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-[#3D2113] mb-1">E-mail *</label>
+              <label className="block text-xs font-semibold text-[#3D2113] mb-1">E-mail (usado para ativar a conta) *</label>
               <input
                 type="email"
                 required
@@ -448,7 +838,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
           </div>
 
           <div className="pt-3 border-t border-[#F2D2B6] space-y-3">
-            <h4 className="text-xs font-semibold text-[#3D2113]">Endereço de entrega (Brasil)</h4>
+            <h4 className="text-xs font-semibold text-[#3D2113]">Endereço de entrega</h4>
             <div className="grid grid-cols-1 sm:grid-cols-6 gap-3">
               <div className="sm:col-span-3">
                 <label className="block text-xs font-semibold text-[#3D2113] mb-1">CEP *</label>
@@ -560,7 +950,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
               className="mt-0.5 accent-[#EA580C]"
             />
             <span>
-              Concordo com a coleta e tratamento dos meus dados pessoais (nome, CPF, e-mail, celular e endereço) exclusivamente para emissão de pedidos, entrega e atendimento, conforme a{' '}
+              Concordo com a coleta e tratamento dos meus dados pessoais (nome, CPF, e-mail, telemóvel/celular e endereço) exclusivamente para emissão de pedidos, entrega e atendimento, conforme a{' '}
               <strong>LGPD (Lei nº 13.709/2018)</strong>.
             </span>
           </label>
@@ -571,7 +961,7 @@ export function AuthForm({onSuccess, initialMode = 'login'}: AuthFormProps) {
             className="w-full py-3 min-h-[46px] rounded-lg bg-[#EA580C] text-white text-sm font-semibold hover:bg-[#C94506] transition-colors flex items-center justify-center gap-2 cursor-pointer"
           >
             {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-            <span>Finalizar Cadastro</span>
+            <span>Cadastrar e Receber Código por E-mail</span>
           </button>
         </form>
       )}

@@ -56,7 +56,7 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallback: '/index.html',
-          navigateFallbackDenylist: [/^\/api\//],
+          navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//],
           runtimeCaching: [
             // Never cache personal data, sessions, checkout, payments, SSE, or private API responses
             {
@@ -93,7 +93,9 @@ export default defineConfig(() => {
             },
             {
               urlPattern: ({url}) =>
-                url.pathname.startsWith('/assets/') || url.pathname.startsWith('/src/assets/'),
+                url.pathname.startsWith('/assets/') ||
+                url.pathname.startsWith('/src/assets/') ||
+                url.pathname.startsWith('/uploads/'),
               handler: 'StaleWhileRevalidate',
               options: {
                 cacheName: 'suzy-bely-media-cache',

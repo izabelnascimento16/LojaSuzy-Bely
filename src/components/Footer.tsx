@@ -1,5 +1,6 @@
 import {Instagram, Mail, MapPin, MessageCircle, ShieldCheck} from 'lucide-react';
 import type {AppView, InstitutionalTab, PublicStoreSettings} from '../types';
+import {buildWhatsAppUrl, formatWhatsAppDisplay} from '../utils/format';
 import {BrandMark} from './BrandLogo';
 import {PWAInstallLink} from './PWAInstallPrompt';
 
@@ -11,14 +12,9 @@ interface FooterProps {
 
 export function Footer({storeSettings, onNavigate, onOpenPolicy}: FooterProps) {
   const contactEmail = storeSettings?.contactEmail || 'atendimento@suzybely.com.br';
-  const storeCity = storeSettings?.storeCity || 'Rondônia, RO';
-  const rawWhatsapp = storeSettings?.whatsappNumber?.replace(/\D/g, '') || '';
-  const whatsappUrl = rawWhatsapp
-    ? `https://wa.me/${rawWhatsapp.startsWith('55') ? rawWhatsapp : `55${rawWhatsapp}`}`
-    : 'https://wa.me/5569999990000';
-  const whatsappDisplay = rawWhatsapp
-    ? rawWhatsapp.replace(/^55/, '').replace(/^(\d{2})(\d{4,5})(\d{4})$/, '($1) $2-$3')
-    : 'Atendimento via WhatsApp';
+  const storeCity = storeSettings?.storeCity || 'Ji-Paraná, RO';
+  const whatsappUrl = buildWhatsAppUrl(storeSettings?.whatsappNumber, storeSettings?.whatsappMessage);
+  const whatsappDisplay = formatWhatsAppDisplay(storeSettings?.whatsappNumber);
 
   return (
     <footer className="bg-gradient-to-b from-[#432010] to-[#2F1509] text-[#FFE8D4] mt-16 border-t-4 border-[#EA580C]">
@@ -43,15 +39,17 @@ export function Footer({storeSettings, onNavigate, onOpenPolicy}: FooterProps) {
                 <Instagram className="w-4 h-4" />
                 <span>@suzybely.bijus</span>
               </a>
-              <a
-                href={whatsappUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg bg-white/10 hover:bg-[#EA580C] transition-colors"
-              >
-                <MessageCircle className="w-4 h-4" />
-                <span>WhatsApp</span>
-              </a>
+              {whatsappUrl && (
+                <a
+                  href={whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg bg-emerald-700/90 text-white hover:bg-emerald-600 transition-colors"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Atendimento no WhatsApp</span>
+                </a>
+              )}
               <PWAInstallLink />
             </div>
           </div>
@@ -120,7 +118,18 @@ export function Footer({storeSettings, onNavigate, onOpenPolicy}: FooterProps) {
               </li>
               <li className="flex items-start gap-2">
                 <MessageCircle className="w-4 h-4 text-[#EA580C] shrink-0 mt-0.5" />
-                <span>{whatsappDisplay} · Seg a Sáb, 9h às 18h</span>
+                {whatsappUrl ? (
+                  <a
+                    href={whatsappUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:text-white underline-offset-2 hover:underline"
+                  >
+                    Fale com um Especialista · {whatsappDisplay}
+                  </a>
+                ) : (
+                  <span>Atendimento no WhatsApp (configure no Painel Loja)</span>
+                )}
               </li>
               <li className="flex items-start gap-2">
                 <MapPin className="w-4 h-4 text-[#EA580C] shrink-0 mt-0.5" />

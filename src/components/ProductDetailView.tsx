@@ -1,13 +1,14 @@
-import {useState} from 'react';
-import {ArrowLeft, Check, Minus, Plus, ShieldCheck, ShoppingBag, Truck, X, ZoomIn} from 'lucide-react';
-import type {Product} from '../types';
-import {discountPercent, effectivePriceCents, formatBRL} from '../utils/format';
+import {useEffect, useState} from 'react';
+import {ArrowLeft, Check, MessageCircle, Minus, Plus, ShieldCheck, ShoppingBag, Truck, X, ZoomIn} from 'lucide-react';
+import type {Product, PublicStoreSettings} from '../types';
+import {buildWhatsAppUrl, discountPercent, effectivePriceCents, formatBRL} from '../utils/format';
 import {ResilientImage} from './BrandLogo';
 import {ProductCard} from './ProductCard';
 
 interface ProductDetailViewProps {
   product: Product;
   related: Product[];
+  storeSettings?: PublicStoreSettings | null;
   onBack: () => void;
   onSelectProduct: (product: Product) => void;
   onAddToCart: (product: Product, quantity: number) => void;
@@ -16,6 +17,7 @@ interface ProductDetailViewProps {
 export function ProductDetailView({
   product,
   related,
+  storeSettings,
   onBack,
   onSelectProduct,
   onAddToCart,
@@ -26,12 +28,26 @@ export function ProductDetailView({
   const [hoverPos, setHoverPos] = useState<{x: number; y: number} | null>(null);
   const [addedFeedback, setAddedFeedback] = useState(false);
 
-  const images = product.images.length > 0 ? product.images : [{id: 0, url: '', alt: product.name, sort_order: 0}];
+  useEffect(() => {
+    setSelectedImageIdx(0);
+    setQuantity(1);
+    setZoomOpen(false);
+  }, [product.id]);
+
+  const images =
+    product.images.length > 0
+      ? product.images
+      : [{id: 0, url: '', imagem: '', alt: product.name, principal: true, sort_order: 0}];
   const activeImg = images[selectedImageIdx] || images[0];
+  const activeImgSrc = activeImg.url || activeImg.imagem || '';
   const finalPrice = effectivePriceCents(product.price_cents, product.promo_price_cents);
   const discount = discountPercent(product.price_cents, product.promo_price_cents);
   const pixPrice = Math.round(finalPrice * 0.95);
   const outOfStock = product.stock <= 0;
+  const productWhatsappUrl = buildWhatsAppUrl(
+    storeSettings?.whatsappNumber,
+    `Olá Suzy Bely! Gostaria de tirar uma dúvida sobre o produto "${product.name}" (${formatBRL(finalPrice)}).`
+  );
 
   const handleAdd = () => {
     if (outOfStock) return;
@@ -76,7 +92,7 @@ export function ProductDetailView({
                   : undefined
               }
             >
-              <ResilientImage src={activeImg.url} alt={activeImg.alt || product.name} priority />
+              <ResilientImage src={activeImgSrc} alt={activeImg.alt || product.name} priority />
             </div>
             <button
               type="button"
@@ -99,11 +115,12 @@ export function ProductDetailView({
                   key={img.id || idx}
                   type="button"
                   onClick={() => setSelectedImageIdx(idx)}
-                  className={`w-24 aspect-[4/3] rounded-lg overflow-hidden border-2 transition-all shrink-0 cursor-pointer ${
+                  aria-label={`Ver fotografia ${idx + 1} de ${product.name}`}
+                  className={`relative w-24 aspect-[4/3] rounded-lg overflow-hidden border-2 transition-all shrink-0 cursor-pointer ${
                     idx === selectedImageIdx ? 'border-[#EA580C]' : 'border-[#F2D2B6] opacity-75 hover:opacity-100'
                   }`}
                 >
-                  <ResilientImage src={img.url} alt={`${product.name} ${idx + 1}`} />
+                  <ResilientImage src={img.url || img.imagem || ''} alt={img.alt || `${product.name} ${idx + 1}`} />
                 </button>
               ))}
             </div>
@@ -113,10 +130,20 @@ export function ProductDetailView({
         {/* Right: Contiguous Purchase Module */}
         <div className="lg:col-span-5 bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-6 sm:p-8 space-y-6">
           <div>
-            <div className="flex items-center gap-2 text-xs text-[#9A6B50] mb-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#9A6B50] mb-2">
               <span>{product.category_name}</span>
-              <span aria-hidden="true">·</span>
-              <span>{product.color}</span>
+              {product.subcategory_name && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{product.subcategory_name}</span>
+                </>
+              )}
+              {product.brand && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-medium text-[#5E3824]">{product.brand}</span>
+                </>
+              )}
               {product.is_new && (
                 <>
                   <span aria-hidden="true">·</span>
@@ -148,22 +175,44 @@ export function ProductDetailView({
 
           <p className="text-sm leading-relaxed text-[#5E3824]">{product.description}</p>
 
-          {/* Specifications */}
+          {/* Specifications (adaptive & optional fields per product type) */}
           <dl className="grid grid-cols-1 gap-3 pt-4 border-t border-[#FFE8D4] text-sm">
-            <div className="flex justify-between gap-4">
-              <dt className="text-[#9A6B50]">Material</dt>
-              <dd className="text-right font-medium text-[#3D2113]">{product.material}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-[#9A6B50]">Cor</dt>
-              <dd className="text-right font-medium text-[#3D2113]">{product.color}</dd>
-            </div>
+            {product.sku && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-[#9A6B50]">Código / Ref.</dt>
+                <dd className="text-right font-mono font-medium text-[#3D2113]">{product.sku}</dd>
+              </div>
+            )}
+            {product.brand && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-[#9A6B50]">Marca</dt>
+                <dd className="text-right font-medium text-[#3D2113]">{product.brand}</dd>
+              </div>
+            )}
+            {product.material && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-[#9A6B50]">Material / Composição</dt>
+                <dd className="text-right font-medium text-[#3D2113]">{product.material}</dd>
+              </div>
+            )}
+            {product.color && (
+              <div className="flex justify-between gap-4">
+                <dt className="text-[#9A6B50]">Cor</dt>
+                <dd className="text-right font-medium text-[#3D2113]">{product.color}</dd>
+              </div>
+            )}
             {product.dimensions && (
               <div className="flex justify-between gap-4">
-                <dt className="text-[#9A6B50]">Dimensões</dt>
+                <dt className="text-[#9A6B50]">Dimensões / Medida</dt>
                 <dd className="text-right font-medium text-[#3D2113]">{product.dimensions}</dd>
               </div>
             )}
+            {Object.entries(product.attributes || {}).map(([attrKey, attrValue]) => (
+              <div key={attrKey} className="flex justify-between gap-4">
+                <dt className="text-[#9A6B50]">{attrKey}</dt>
+                <dd className="text-right font-medium text-[#3D2113]">{attrValue}</dd>
+              </div>
+            ))}
             <div className="flex justify-between gap-4">
               <dt className="text-[#9A6B50]">Disponibilidade</dt>
               <dd className="text-right font-semibold text-[#3D2113] tabular-nums">
@@ -220,13 +269,29 @@ export function ProductDetailView({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 sm:gap-3 pt-2 text-xs text-[#7A4D35]">
               <div className="flex items-center gap-2">
                 <Truck className="w-4 h-4 text-[#EA580C] shrink-0" />
-                <span>Frete grátis acima de R$ 150</span>
+                <span>
+                  {storeSettings?.freeShippingThresholdCents && storeSettings.freeShippingThresholdCents > 0
+                    ? `Frete grátis acima de ${formatBRL(storeSettings.freeShippingThresholdCents)}`
+                    : `Frete calculado pelo CEP · ${storeSettings?.storeCity || 'Ji-Paraná, RO'}`}
+                </span>
               </div>
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-[#D4A548] shrink-0" />
                 <span>Garantia contra defeitos</span>
               </div>
             </div>
+
+            {productWhatsappUrl && (
+              <a
+                href={productWhatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full h-11 px-4 rounded-lg border border-emerald-600/40 bg-emerald-50/70 text-emerald-900 text-xs sm:text-sm font-semibold hover:bg-emerald-100 transition-colors flex items-center justify-center gap-2"
+              >
+                <MessageCircle className="w-4 h-4 text-emerald-700" />
+                <span>Tirar dúvida sobre este produto no WhatsApp</span>
+              </a>
+            )}
           </div>
         </div>
       </div>
@@ -235,7 +300,7 @@ export function ProductDetailView({
       {related.length > 0 && (
         <section className="mt-12 sm:mt-16 pt-8 sm:pt-12 border-t border-[#F2D2B6]">
           <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113] mb-6 sm:mb-8">
-            Peças Relacionadas
+            Produtos Relacionados
           </h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
             {related.map((item) => (
@@ -271,7 +336,7 @@ export function ProductDetailView({
             onClick={(e) => e.stopPropagation()}
           >
             <ResilientImage
-              src={activeImg.url}
+              src={activeImgSrc}
               alt={activeImg.alt || product.name}
               className="w-full h-full max-h-[85vh] object-contain"
             />

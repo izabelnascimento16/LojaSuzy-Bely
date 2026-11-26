@@ -1,6 +1,7 @@
 import {useEffect, useState} from 'react';
-import {ChevronRight, Menu, Search, ShoppingBag, User as UserIcon, X} from 'lucide-react';
-import type {AppView, User} from '../types';
+import {ChevronRight, Menu, MessageCircle, Search, ShoppingBag, User as UserIcon, X} from 'lucide-react';
+import type {AppView, Category, PublicStoreSettings, User} from '../types';
+import {buildWhatsAppUrl, formatBRL} from '../utils/format';
 import {BrandMark} from './BrandLogo';
 
 interface HeaderProps {
@@ -12,6 +13,8 @@ interface HeaderProps {
   onOpenAuth: () => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
+  storeSettings?: PublicStoreSettings | null;
+  categories?: Category[];
 }
 
 export function Header({
@@ -23,7 +26,10 @@ export function Header({
   onOpenAuth,
   searchQuery,
   onSearchChange,
+  storeSettings,
+  categories = [],
 }: HeaderProps) {
+  const whatsappUrl = buildWhatsAppUrl(storeSettings?.whatsappNumber, storeSettings?.whatsappMessage);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -45,7 +51,13 @@ export function Header({
   return (
     <>
       <div className="bg-gradient-to-r from-[#EA580C] via-[#F97316] to-[#EA580C] text-white text-[11px] sm:text-xs font-medium py-1.5 px-3 text-center tracking-wide">
-        <span>Frete Grátis acima de R$ 150 · 5% OFF no PIX · Envio para todo o Brasil</span>
+        <span>
+          {storeSettings?.freeShippingThresholdCents && storeSettings.freeShippingThresholdCents > 0
+            ? `Frete Grátis acima de ${formatBRL(storeSettings.freeShippingThresholdCents)} · `
+            : ''}
+          {(storeSettings?.pixDiscountPercent ?? 5) > 0 ? `${storeSettings?.pixDiscountPercent ?? 5}% OFF no PIX · ` : ''}
+          Envio para todo o Brasil · {storeSettings?.storeCity || 'Ji-Paraná, RO'}
+        </span>
       </div>
       <header className="sticky top-0 z-40 bg-[#FFF9F4]/95 backdrop-blur-md border-b-2 border-[#FB923C]/45 shadow-xs">
         <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2 sm:gap-4 lg:gap-8">
@@ -130,8 +142,22 @@ export function Header({
             </button>
           </nav>
 
-          {/* Zone 3: Search, Account & Cart */}
+          {/* Zone 3: Search, WhatsApp, Account & Cart */}
           <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
+            {whatsappUrl && (
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Fale com um Especialista — Atendimento no WhatsApp"
+                aria-label="Fale com um Especialista — Atendimento no WhatsApp"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 transition-colors min-h-[40px] whitespace-nowrap shrink-0"
+              >
+                <MessageCircle className="w-4 h-4 text-emerald-700" />
+                <span className="hidden lg:inline">WhatsApp</span>
+              </a>
+            )}
+
             <button
               type="button"
               onClick={() => setSearchOpen((prev) => !prev)}
@@ -176,7 +202,7 @@ export function Header({
                 type="search"
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Buscar brincos, colares, anéis, conjuntos..."
+                placeholder="Buscar bijuterias, bolsas, maquiagem, hidratantes..."
                 autoFocus
                 className="flex-1 bg-white border border-[#F2D2B6] rounded-lg px-4 py-2.5 text-base sm:text-sm text-[#3D2113] placeholder-[#9A6B50] focus:outline-none focus:border-[#EA580C] min-h-[44px]"
               />
@@ -203,8 +229,8 @@ export function Header({
             className="w-[82%] max-w-xs bg-[#FFFFFF] h-dvh flex flex-col justify-between border-r border-[#F2D2B6] shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div>
-              <div className="px-5 h-16 border-b border-[#F2D2B6] flex items-center justify-between">
+            <div className="flex-1 overflow-y-auto">
+              <div className="px-5 h-16 border-b border-[#F2D2B6] flex items-center justify-between sticky top-0 bg-white z-10">
                 <div className="flex items-center gap-2 text-[#EA580C]">
                   <BrandMark className="w-5 h-5" />
                   <span className="font-display text-xl font-semibold text-[#3D2113]">Suzy Bely</span>
@@ -223,16 +249,17 @@ export function Header({
                 {[
                   {label: 'Início', view: 'home' as AppView},
                   {label: 'Catálogo Completo', view: 'catalog' as AppView, cat: 'all'},
-                  {label: 'Brincos', view: 'catalog' as AppView, cat: 'brincos'},
-                  {label: 'Colares', view: 'catalog' as AppView, cat: 'colares'},
-                  {label: 'Pulseiras e Anéis', view: 'catalog' as AppView, cat: 'pulseiras'},
-                  {label: 'Conjuntos', view: 'catalog' as AppView, cat: 'conjuntos'},
+                  ...categories.map((c) => ({
+                    label: c.name,
+                    view: 'catalog' as AppView,
+                    cat: c.slug,
+                  })),
                   {label: 'Promoções', view: 'catalog' as AppView, cat: 'promocoes'},
                   {label: 'Sobre Nós & Valores', view: 'institucional' as AppView},
                   {label: 'Painel Administrativo', view: 'admin' as AppView},
                 ].map((item) => (
                   <button
-                    key={item.label}
+                    key={`${item.view}-${item.cat || item.label}`}
                     type="button"
                     onClick={() => {
                       onNavigate(item.view, item.cat);
@@ -248,6 +275,18 @@ export function Header({
             </div>
 
             <div className="p-4 border-t border-[#F2D2B6] bg-[#FFF9F4] space-y-2.5 pb-[max(1rem,env(safe-area-inset-bottom))]">
+              {whatsappUrl && (
+                <a
+                  href={whatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="w-full py-3 px-4 rounded-xl bg-emerald-700 text-white text-sm font-semibold flex items-center justify-center gap-2 min-h-[46px] hover:bg-emerald-800"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  <span>Atendimento no WhatsApp</span>
+                </a>
+              )}
               <button
                 type="button"
                 onClick={() => {

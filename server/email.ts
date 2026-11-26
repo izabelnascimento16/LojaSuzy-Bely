@@ -3,6 +3,7 @@ import {db, getStoreSettings} from './db.ts';
 import {isValidEmail} from './validators.ts';
 
 export type EmailEventType =
+  | 'account_verification'
   | 'welcome'
   | 'order_confirmation'
   | 'owner_new_order'
@@ -208,6 +209,42 @@ async function dispatchEmail(params: {
     recordEmailLog(recipient, subject, params.eventType, 'failed', message);
     return {dispatched: false, status: 'failed', errorMessage: message};
   }
+}
+
+export async function sendAccountVerificationCodeEmail(params: {
+  to: string;
+  fullName: string;
+  code: string;
+}) {
+  const settings = getStoreSettings();
+  const firstName = params.fullName.trim().split(/\s+/)[0] || params.fullName;
+  const storeCity = settings.store_city || 'Ji-Paraná, RO';
+  const contactEmail = settings.contact_email || 'atendimento@suzybely.com.br';
+  const subject = `${params.code} é o seu código de confirmação — Suzy Bely`;
+
+  const bodyHtml = `
+    <h1 style="margin:0 0 10px;font-size:20px;color:#3D2113;">Confirme sua conta na Suzy Bely</h1>
+    <p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#5E3824;">
+      Olá, <strong>${escapeHtml(firstName)}</strong>. Para ativar sua conta com segurança, digite o código de 6 dígitos abaixo na tela de confirmação. Ele é válido por <strong>5 minutos</strong>.
+    </p>
+    <div style="background-color:#FFF2E6;border:2px solid #EA580C;border-radius:12px;padding:18px 20px;margin:18px 0;text-align:center;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:#7A4D35;margin-bottom:6px;">Código de Verificação</div>
+      <div style="font-family:monospace;font-size:30px;font-weight:700;letter-spacing:8px;color:#3D2113;">${escapeHtml(params.code)}</div>
+    </div>
+    <p style="margin:0;font-size:12px;color:#7A4D35;line-height:1.5;">
+      Por segurança, este código expira em 5 minutos e possui limite de tentativas. Se você não criou esta conta, ignore este e-mail ou fale com ${escapeHtml(contactEmail)}.
+    </p>
+  `;
+
+  const text = `Olá, ${firstName}!\n\nSeu código de confirmação de 6 dígitos na Suzy Bely é: ${params.code}\n\nEste código expira em 5 minutos. Digite-o na loja para ativar sua conta.\n\nAtendimento: ${contactEmail}`;
+
+  return dispatchEmail({
+    to: params.to,
+    subject,
+    text,
+    html: wrapEmailLayout(subject, bodyHtml, `Suzy Bely Bijuterias · ${escapeHtml(storeCity)} · ${escapeHtml(contactEmail)}`),
+    eventType: 'account_verification',
+  });
 }
 
 export async function sendWelcomeEmail(params: {to: string; fullName: string}) {

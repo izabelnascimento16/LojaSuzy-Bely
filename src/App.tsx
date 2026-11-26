@@ -1,5 +1,5 @@
 import {useCallback, useEffect, useMemo, useState} from 'react';
-import {ArrowRight, Search, SlidersHorizontal, Star} from 'lucide-react';
+import {ArrowRight, Copy, ExternalLink, Mail, MessageCircle, Search, SlidersHorizontal, Star} from 'lucide-react';
 import type {
   Address,
   AppView,
@@ -14,7 +14,7 @@ import type {
   User,
 } from './types';
 import {apiRequest, setCustomerToken} from './services/api';
-import {effectivePriceCents} from './utils/format';
+import {buildWhatsAppUrl, effectivePriceCents, formatWhatsAppDisplay} from './utils/format';
 import {Header} from './components/Header';
 import {Footer} from './components/Footer';
 import {ResilientImage} from './components/BrandLogo';
@@ -56,11 +56,13 @@ export default function App() {
   const [loadingCatalog, setLoadingCatalog] = useState(true);
 
   // Filters & Selection
-  const [homeSpotlight, setHomeSpotlight] = useState<'featured' | 'new' | 'bestseller' | 'promo'>('featured');
+  const [homeSpotlight, setHomeSpotlight] = useState<'featured' | 'new' | 'bestseller' | 'promo'>('new');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedSubcategory, setSelectedSubcategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [onlyInStock, setOnlyInStock] = useState<boolean>(false);
   const [onlyNewFilter, setOnlyNewFilter] = useState<boolean>(false);
+  const [minPriceReais, setMinPriceReais] = useState<string>('');
   const [maxPriceReais, setMaxPriceReais] = useState<string>('');
   const [sortBy, setSortBy] = useState<'featured' | 'newest' | 'bestseller' | 'price_asc' | 'price_desc'>('featured');
 
@@ -85,6 +87,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [waCopied, setWaCopied] = useState(false);
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -169,10 +172,13 @@ export default function App() {
     });
   }, [cartItems]);
 
-  const handleNavigate = (nextView: AppView, categorySlug?: string) => {
+  const handleNavigate = (nextView: AppView, categorySlug?: string, subcategorySlug?: string) => {
     setView(nextView);
     if (categorySlug !== undefined) {
       setSelectedCategory(categorySlug);
+      setSelectedSubcategory(subcategorySlug ?? 'all');
+    } else if (subcategorySlug !== undefined) {
+      setSelectedSubcategory(subcategorySlug);
     }
     window.scrollTo({top: 0, behavior: 'smooth'});
   };
@@ -251,6 +257,12 @@ export default function App() {
     return list.slice(0, 6);
   }, [products, homeSpotlight]);
 
+  // Active category object for dynamic subcategories
+  const activeCategoryObj = useMemo(
+    () => categories.find((c) => c.slug === selectedCategory) || null,
+    [categories, selectedCategory]
+  );
+
   // Catalog filtered list
   const filteredCatalog = useMemo(() => {
     let list = [...products];
@@ -263,21 +275,40 @@ export default function App() {
         list = list.filter((p) => p.category_slug === selectedCategory);
       }
     }
+    if (selectedSubcategory !== 'all') {
+      list = list.filter((p) => p.subcategory_slug === selectedSubcategory);
+    }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (p) =>
+      list = list.filter((p) => {
+        const attrText = Object.entries(p.attributes || {})
+          .map(([k, v]) => `${k} ${v}`)
+          .join(' ')
+          .toLowerCase();
+        return (
           p.name.toLowerCase().includes(q) ||
           p.description.toLowerCase().includes(q) ||
           p.material.toLowerCase().includes(q) ||
-          p.category_name.toLowerCase().includes(q)
-      );
+          p.color.toLowerCase().includes(q) ||
+          p.brand.toLowerCase().includes(q) ||
+          p.sku.toLowerCase().includes(q) ||
+          p.category_name.toLowerCase().includes(q) ||
+          (p.subcategory_name || '').toLowerCase().includes(q) ||
+          attrText.includes(q)
+        );
+      });
     }
     if (onlyInStock) {
       list = list.filter((p) => p.stock > 0);
     }
     if (onlyNewFilter) {
       list = list.filter((p) => p.is_new);
+    }
+    if (minPriceReais.trim()) {
+      const minCents = Math.round(parseFloat(minPriceReais.replace(',', '.')) * 100);
+      if (!Number.isNaN(minCents) && minCents > 0) {
+        list = list.filter((p) => effectivePriceCents(p.price_cents, p.promo_price_cents) >= minCents);
+      }
     }
     if (maxPriceReais.trim()) {
       const maxCents = Math.round(parseFloat(maxPriceReais.replace(',', '.')) * 100);
@@ -305,7 +336,17 @@ export default function App() {
     }
 
     return list;
-  }, [products, selectedCategory, searchQuery, onlyInStock, onlyNewFilter, maxPriceReais, sortBy]);
+  }, [
+    products,
+    selectedCategory,
+    selectedSubcategory,
+    searchQuery,
+    onlyInStock,
+    onlyNewFilter,
+    minPriceReais,
+    maxPriceReais,
+    sortBy,
+  ]);
 
   const activeBanner = banners[0] || {
     id: 0,
@@ -319,6 +360,11 @@ export default function App() {
     sort_order: 1,
   };
 
+  const whatsappUrl = buildWhatsAppUrl(storeSettings?.whatsappNumber, storeSettings?.whatsappMessage);
+  const whatsappDisplay = formatWhatsAppDisplay(storeSettings?.whatsappNumber);
+  const storeCity = storeSettings?.storeCity || 'Ji-Paraná, RO';
+  const contactEmail = storeSettings?.contactEmail || 'atendimento@suzybely.com.br';
+
   return (
     <div className="min-h-screen flex flex-col bg-[#FFF4EB] text-[#3D2113]">
       <Header
@@ -330,6 +376,8 @@ export default function App() {
         onOpenAuth={() => setAuthModalOpen(true)}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
+        storeSettings={storeSettings}
+        categories={categories}
       />
 
       <main className="flex-1">
@@ -342,7 +390,7 @@ export default function App() {
                 <div className="lg:col-span-5 p-6 sm:p-10 lg:p-12 flex flex-col justify-center gap-5 sm:gap-6 order-last lg:order-first text-white">
                   <div className="space-y-3 sm:space-y-4">
                     <p className="text-xs font-bold tracking-widest text-[#FFE8D4] uppercase">
-                      Suzy Bely · Bijuterias &amp; Acessórios
+                      Suzy Bely · Moda, Beleza &amp; Acessórios
                     </p>
                     <h1 className="font-display text-2xl sm:text-4xl lg:text-[2.75rem] font-bold text-white leading-[1.12] text-balance drop-shadow-xs">
                       {activeBanner.title}
@@ -382,7 +430,85 @@ export default function App() {
               </div>
             </section>
 
-            {/* Section 2: Categories + Curated Collection (Destaques, Novidades, Mais Vendidos, Promoções) */}
+            {/* Section 2: Visual Categories Showcase (100% Dynamic from Database) */}
+            {categories.length > 0 && (
+              <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-wider text-[#EA580C] mb-1">
+                      Explore por Departamento
+                    </p>
+                    <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113]">
+                      Universo Suzy Bely
+                    </h2>
+                    <p className="text-sm text-[#7A4D35] mt-1">
+                      De bijuterias delicadas a bolsas, maquiagem e cuidados corporais e faciais.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('catalog', 'promocoes')}
+                    className="self-start sm:self-auto px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#F97316] to-[#EA580C] text-xs font-bold text-white hover:from-[#EA580C] hover:to-[#C94506] transition-all shadow-xs whitespace-nowrap cursor-pointer min-h-[40px]"
+                  >
+                    Ver Promoções
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-5">
+                  {categories.map((cat) => (
+                    <div
+                      key={cat.id}
+                      className="group bg-[#FFFFFF] border border-[#FDBA74]/60 hover:border-[#EA580C]/80 rounded-2xl overflow-hidden flex flex-col transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#EA580C]/10"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleNavigate('catalog', cat.slug)}
+                        className="relative aspect-[4/3] w-full overflow-hidden bg-[#FFE8D4]/50 text-left cursor-pointer"
+                      >
+                        <ResilientImage
+                          src={cat.image_url || '/src/assets/images/hero_suzy_bely_jewelry_1795522216462.jpg'}
+                          alt={cat.name}
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
+                        />
+                        <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-[#3D2113]/65 to-transparent" />
+                        <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between gap-2 text-white">
+                          <span className="font-display text-sm sm:text-base font-semibold leading-tight drop-shadow-xs">
+                            {cat.name}
+                          </span>
+                          <ArrowRight className="w-4 h-4 shrink-0 opacity-85 group-hover:translate-x-0.5 transition-transform" />
+                        </div>
+                      </button>
+
+                      <div className="p-3 sm:p-4 flex-1 flex flex-col justify-between gap-2">
+                        {cat.description && (
+                          <p className="text-[11px] sm:text-xs text-[#7A4D35] line-clamp-2 leading-relaxed">
+                            {cat.description}
+                          </p>
+                        )}
+                        {cat.subcategories && cat.subcategories.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 text-[11px] text-[#9A6B50]">
+                            {cat.subcategories.slice(0, 3).map((sub, idx) => (
+                              <span key={sub.id} className="inline-flex items-center gap-2">
+                                {idx > 0 && <span aria-hidden="true">·</span>}
+                                <button
+                                  type="button"
+                                  onClick={() => handleNavigate('catalog', cat.slug, sub.slug)}
+                                  className="hover:text-[#EA580C] font-medium transition-colors cursor-pointer"
+                                >
+                                  {sub.name}
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Section 3: Curated Spotlight (Novidades, Mais Vendidos, Promoções, Destaques) */}
             <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
                 <div>
@@ -390,20 +516,20 @@ export default function App() {
                     Vitrine Oficial
                   </p>
                   <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113]">
-                    Coleção Curada
+                    Seleção em Destaque
                   </h2>
                   <p className="text-sm text-[#7A4D35] mt-1">
-                    Navegue livremente por categorias, lançamentos e promoções especiais.
+                    Novidades recém-chegadas, itens mais vendidos e ofertas com preço especial.
                   </p>
                 </div>
 
                 {/* Segmented Spotlight Filter */}
                 <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-1 p-1.5 bg-[#FFE3CC] rounded-xl w-full sm:w-fit border border-[#FDBA74]/60">
                   {[
-                    {id: 'featured' as const, label: 'Destaques'},
                     {id: 'new' as const, label: 'Novidades'},
                     {id: 'bestseller' as const, label: 'Mais Vendidos'},
                     {id: 'promo' as const, label: 'Promoções'},
+                    {id: 'featured' as const, label: 'Destaques'},
                   ].map((tab) => (
                     <button
                       key={tab.id}
@@ -419,27 +545,6 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-              </div>
-
-              {/* Category quick links - swipeable on mobile, wrapped on tablet/desktop */}
-              <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-2 pb-3 border-b border-[#FDBA74]/50">
-                {categories.map((cat) => (
-                  <button
-                    key={cat.id}
-                    type="button"
-                    onClick={() => handleNavigate('catalog', cat.slug)}
-                    className="px-4 py-2.5 rounded-lg bg-[#FFFFFF] border border-[#FDBA74]/70 text-xs font-semibold text-[#3D2113] hover:bg-[#EA580C] hover:border-[#EA580C] hover:text-white transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[40px]"
-                  >
-                    {cat.name}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('catalog', 'promocoes')}
-                  className="px-4 py-2.5 rounded-lg bg-gradient-to-r from-[#F97316] to-[#EA580C] text-xs font-bold text-white hover:from-[#EA580C] hover:to-[#C94506] transition-all shadow-xs whitespace-nowrap shrink-0 cursor-pointer min-h-[40px]"
-                >
-                  Ofertas Especiais
-                </button>
               </div>
 
               {loadingCatalog ? (
@@ -468,6 +573,64 @@ export default function App() {
                 </button>
               </div>
             </section>
+
+            {/* Section 4: Dynamic Department Sections (Bijuterias, Bolsas e Carteiras, Maquiagem, Cuidados Corporais, Cuidados Faciais, etc.) */}
+            {!loadingCatalog &&
+              categories.map((cat) => {
+                const deptProducts = products.filter((p) => p.category_id === cat.id).slice(0, 4);
+                if (deptProducts.length === 0) return null;
+                return (
+                  <section
+                    key={`dept-${cat.id}`}
+                    className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-5 pt-2"
+                  >
+                    <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3 pb-3 border-b border-[#FDBA74]/50">
+                      <div>
+                        <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113]">
+                          {cat.name}
+                        </h2>
+                        {cat.description && (
+                          <p className="text-sm text-[#7A4D35] mt-0.5">{cat.description}</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleNavigate('catalog', cat.slug)}
+                        className="self-start sm:self-auto inline-flex items-center gap-1.5 text-xs sm:text-sm font-semibold text-[#EA580C] hover:text-[#C94506] transition-colors cursor-pointer shrink-0"
+                      >
+                        <span>Ver tudo em {cat.name}</span>
+                        <ArrowRight className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {cat.subcategories && cat.subcategories.length > 0 && (
+                      <div className="flex flex-nowrap overflow-x-auto no-scrollbar sm:flex-wrap items-center gap-2">
+                        {cat.subcategories.map((sub) => (
+                          <button
+                            key={sub.id}
+                            type="button"
+                            onClick={() => handleNavigate('catalog', cat.slug, sub.slug)}
+                            className="px-3.5 py-1.5 rounded-lg bg-[#FFFFFF] border border-[#F2D2B6] text-xs font-medium text-[#5E3824] hover:border-[#EA580C] hover:text-[#EA580C] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            {sub.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6">
+                      {deptProducts.map((product) => (
+                        <ProductCard
+                          key={product.id}
+                          product={product}
+                          onSelect={handleOpenProduct}
+                          onAddToCart={(p) => handleAddToCart(p, 1)}
+                        />
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
 
             {/* Section 3: Sobre a Marca */}
             <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
@@ -546,6 +709,81 @@ export default function App() {
                 </div>
               </section>
             )}
+
+            {/* Section 5: Área de Atendimento Direto pelo WhatsApp */}
+            <section id="atendimento-whatsapp" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="bg-gradient-to-br from-[#FFFFFF] via-[#FFF9F4] to-[#FFE8D4]/80 border-2 border-[#FDBA74]/70 rounded-2xl p-6 sm:p-10 shadow-md shadow-[#EA580C]/10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                <div className="space-y-3 max-w-2xl">
+                  <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#EA580C]">
+                    <MessageCircle className="w-4 h-4" />
+                    <span>Atendimento no WhatsApp</span>
+                  </div>
+                  <h2 className="font-display text-2xl sm:text-3xl font-semibold text-[#3D2113] text-balance">
+                    Fale com um Especialista
+                  </h2>
+                  <p className="text-sm sm:text-base text-[#5E3824] leading-relaxed">
+                    Atendimento consultivo para agendamentos de visitas, avaliações e propostas.
+                  </p>
+                  {whatsappUrl ? (
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-[#5E3824] pt-1">
+                      <span className="font-semibold text-[#3D2113] font-mono bg-white border border-[#F2D2B6] px-3 py-1.5 rounded-lg">
+                        {whatsappDisplay}
+                      </span>
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[#EA580C] hover:underline break-all"
+                      >
+                        {whatsappUrl.split('?')[0]}
+                      </a>
+                      <span className="text-[#7A4D35]">· {storeCity} · Seg a Sáb, 9h às 18h</span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[#7A4D35]">
+                      Canal direto em {storeCity}. Cadastre o número no Painel da Loja para ativar o botão ou envie um e-mail para {contactEmail}.
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row lg:flex-col xl:flex-row items-stretch sm:items-center gap-3 shrink-0">
+                  {whatsappUrl ? (
+                    <>
+                      <a
+                        href={whatsappUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center gap-2.5 px-6 py-3.5 rounded-xl bg-emerald-700 text-white text-sm font-bold hover:bg-emerald-800 shadow-md shadow-emerald-900/15 transition-colors min-h-[48px]"
+                      >
+                        <MessageCircle className="w-5 h-5" />
+                        <span>Atendimento no WhatsApp</span>
+                        <ExternalLink className="w-4 h-4" />
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard?.writeText(whatsappUrl);
+                          setWaCopied(true);
+                          setTimeout(() => setWaCopied(false), 2000);
+                        }}
+                        className="inline-flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl border border-[#F2D2B6] bg-white text-[#3D2113] text-sm font-semibold hover:bg-[#FFE8D4] transition-colors min-h-[48px] cursor-pointer"
+                      >
+                        <Copy className="w-4 h-4 text-[#EA580C]" />
+                        <span>{waCopied ? 'Link copiado!' : 'Copiar Link'}</span>
+                      </button>
+                    </>
+                  ) : (
+                    <a
+                      href={`mailto:${contactEmail}`}
+                      className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-[#EA580C] text-white text-sm font-bold hover:bg-[#C94506] transition-colors min-h-[48px]"
+                    >
+                      <Mail className="w-4 h-4" />
+                      <span>Falar por E-mail</span>
+                    </a>
+                  )}
+                </div>
+              </div>
+            </section>
           </div>
         )}
 
@@ -554,35 +792,47 @@ export default function App() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-12 space-y-8">
             <div className="space-y-2">
               <h1 className="font-display text-3xl sm:text-4xl font-semibold text-[#3D2113]">
-                Catálogo de Bijuterias &amp; Acessórios
+                {activeCategoryObj ? activeCategoryObj.name : 'Catálogo Suzy Bely'}
               </h1>
               <p className="text-sm text-[#7A4D35]">
-                Consulte preços, filtre por categoria ou disponibilidade e adicione à sacola sem precisar de login.
+                {activeCategoryObj?.description ||
+                  'Explore bijuterias, bolsas, cintos, maquiagem e cuidados corporais e faciais com entrega para todo o Brasil.'}
               </p>
             </div>
 
             {/* Filters Bar */}
             <div className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-4 sm:p-5 space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 items-center">
-                <div className="lg:col-span-5 relative">
+                <div className="lg:col-span-4 relative">
                   <Search className="w-4 h-4 text-[#9A6B50] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Pesquisar por nome, material ou cor..."
+                    placeholder="Buscar produto, marca, código, fragrância..."
                     className="w-full bg-white border border-[#F2D2B6] rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
 
-                <div className="lg:col-span-3">
+                <div className="lg:col-span-2">
+                  <input
+                    type="number"
+                    min={0}
+                    value={minPriceReais}
+                    onChange={(e) => setMinPriceReais(e.target.value)}
+                    placeholder="Preço mín. (R$)"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
+                  />
+                </div>
+
+                <div className="lg:col-span-2">
                   <input
                     type="number"
                     min={1}
                     value={maxPriceReais}
                     onChange={(e) => setMaxPriceReais(e.target.value)}
-                    placeholder="Preço máximo (R$)"
-                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3.5 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
+                    placeholder="Preço máx. (R$)"
+                    className="w-full bg-white border border-[#F2D2B6] rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#EA580C]"
                   />
                 </div>
 
@@ -613,7 +863,10 @@ export default function App() {
                     <button
                       key={cat.slug}
                       type="button"
-                      onClick={() => setSelectedCategory(cat.slug)}
+                      onClick={() => {
+                        setSelectedCategory(cat.slug);
+                        setSelectedSubcategory('all');
+                      }}
                       className={`px-3.5 py-2 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer min-h-[38px] ${
                         selectedCategory === cat.slug
                           ? 'bg-[#EA580C] text-white'
@@ -646,18 +899,54 @@ export default function App() {
                   </label>
                 </div>
               </div>
+
+              {/* Dynamic Subcategories Row when a category with subcategories is active */}
+              {activeCategoryObj && activeCategoryObj.subcategories && activeCategoryObj.subcategories.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-[#FFE8D4]">
+                  <span className="text-[11px] font-semibold text-[#9A6B50] mr-1">
+                    Subcategorias:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSubcategory('all')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      selectedSubcategory === 'all'
+                        ? 'bg-[#3D2113] text-white'
+                        : 'bg-[#FFF9F4] border border-[#F2D2B6] text-[#5E3824] hover:bg-[#FFE8D4]'
+                    }`}
+                  >
+                    Todas
+                  </button>
+                  {activeCategoryObj.subcategories.map((sub) => (
+                    <button
+                      key={sub.id}
+                      type="button"
+                      onClick={() => setSelectedSubcategory(sub.slug)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                        selectedSubcategory === sub.slug
+                          ? 'bg-[#3D2113] text-white'
+                          : 'bg-[#FFF9F4] border border-[#F2D2B6] text-[#5E3824] hover:bg-[#FFE8D4]'
+                      }`}
+                    >
+                      {sub.name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             {filteredCatalog.length === 0 ? (
               <div className="bg-[#FFFFFF] border border-[#F2D2B6] rounded-2xl p-12 text-center space-y-3">
-                <p className="font-display text-xl text-[#3D2113]">Nenhuma peça encontrada com esses filtros</p>
+                <p className="font-display text-xl text-[#3D2113]">Nenhum produto encontrado com esses filtros</p>
                 <button
                   type="button"
                   onClick={() => {
                     setSelectedCategory('all');
+                    setSelectedSubcategory('all');
                     setSearchQuery('');
                     setOnlyInStock(false);
                     setOnlyNewFilter(false);
+                    setMinPriceReais('');
                     setMaxPriceReais('');
                   }}
                   className="px-4 py-2.5 rounded-lg border border-[#3D2113] text-xs font-semibold cursor-pointer min-h-[44px]"
@@ -685,6 +974,7 @@ export default function App() {
           <ProductDetailView
             product={selectedProduct}
             related={relatedProducts}
+            storeSettings={storeSettings}
             onBack={() => handleNavigate('catalog')}
             onSelectProduct={handleOpenProduct}
             onAddToCart={handleAddToCart}
@@ -719,6 +1009,7 @@ export default function App() {
             <CustomerAreaView
               user={user}
               addresses={addresses}
+              storeSettings={storeSettings}
               onUpdateUser={setUser}
               onUpdateAddresses={setAddresses}
               onLogout={() => {
@@ -747,6 +1038,7 @@ export default function App() {
         {view === 'institucional' && (
           <InstitutionalView
             activeTab={institutionalTab}
+            storeSettings={storeSettings}
             onChangeTab={setInstitutionalTab}
             onExploreCatalog={() => handleNavigate('catalog', 'all')}
           />
